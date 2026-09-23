@@ -1,5 +1,5 @@
 ---
-title: "Two-Factor Authentication with TOTP"
+title: "TOTP Two-Factor Authentication: Setup, Login, and Recovery"
 sidebarTitle: "Two-Factor Auth"
 description: "Learn how Auth Backend implements TOTP 2FA: setup flow, backup codes, replay protection with Redis, AES encryption at rest, and how to disable 2FA safely."
 ---
@@ -32,7 +32,7 @@ Enabling 2FA is a two-step process that requires the user to be authenticated.
     ```json Response body
     {
       "secret": "JBSWY3DPEHPK3PXP",
-      "uri": "otpauth://totp/AuthBackend:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=AuthBackend&digits=6&period=30",
+      "qrCodeUri": "otpauth://totp/AuthBackend:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=AuthBackend&digits=6&period=30",
       "qrCodeImage": "data:image/png;base64,iVBORw0KGgoAAAANS..."
     }
     ```
@@ -44,7 +44,7 @@ Enabling 2FA is a two-step process that requires the user to be authenticated.
 
     - Marks 2FA as enabled (`twoFactorEnabled = true`).
     - Generates **8 backup codes** (10-character alphanumeric, `SecureRandom`).
-    - BCrypt-hashes each backup code and stores the JSON array encrypted with AES in `backup_codes_json`.
+    - BCrypt-hashes each backup code and stores the JSON array encrypted with AES-256-GCM in `backup_codes_json`.
     - Returns the **plain-text backup codes exactly once**:
 
     ```json Response body
@@ -128,7 +128,7 @@ At the `/2fa/verify` endpoint the server first attempts to validate the submitte
 
 <Accordion title="Backup code storage details">
 
-Backup codes are stored in the `backup_codes_json` column of the `users` table as an AES-encrypted JSON array of BCrypt hashes. The encryption uses the key from `app.encryption.secret-key`. Even if an attacker gains read access to the database, they cannot recover the original backup codes without both the encryption key and a BCrypt brute-force.
+Backup codes are stored in the `backup_codes_json` column of the `users` table as an AES-256-GCM-encrypted JSON array of BCrypt hashes. The encryption uses the 256-bit key from `app.encryption.secret-key`, with a unique 12-byte IV prepended to each encrypted value. Even if an attacker gains read access to the database, they cannot recover the original backup codes without both the encryption key and a BCrypt brute-force.
 
 When a code is consumed, the matching hash is removed from the array, the shortened list is re-serialized, re-encrypted, and written back to the database within the same transaction.
 
@@ -150,11 +150,11 @@ This applies at both the `confirm-setup` and `verify` (login) endpoints.
 
 ## Encryption at Rest
 
-Both the TOTP secret and the backup codes JSON are encrypted with AES using the key defined by `app.encryption.secret-key`. The plaintext is never stored in the database.
+Both the TOTP secret and the backup codes JSON are encrypted with **AES-256-GCM** using the 256-bit key defined by `app.encryption.secret-key`. A fresh 12-byte IV is generated for every write and stored alongside the ciphertext. The plaintext is never stored in the database.
 
 ```
-Database column: two_factor_secret  → AES-encrypted TOTP secret
-Database column: backup_codes_json  → AES-encrypted JSON array of BCrypt hashes
+Database column: two_factor_secret  → AES-256-GCM encrypted TOTP secret
+Database column: backup_codes_json  → AES-256-GCM encrypted JSON array of BCrypt hashes
 ```
 
 ## Disabling 2FA

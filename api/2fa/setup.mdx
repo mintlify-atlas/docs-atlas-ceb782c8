@@ -1,7 +1,7 @@
 ---
 title: "Set Up Two-Factor Authentication — TOTP Enrollment"
 sidebarTitle: "Setup 2FA"
-description: "Enroll a TOTP authenticator app on your account with a two-step flow: generate a QR code, then confirm with your first live code to receive one-time backup codes."
+description: "Enroll TOTP in two steps: scan a QR code with your authenticator app, then confirm with your first live code to activate 2FA and receive backup codes."
 ---
 
 Auth Backend's two-factor authentication (2FA) uses the TOTP standard (RFC 6238) to add a second layer of security beyond your password. Enrollment is a deliberate two-step process: the first endpoint generates a shared secret and a QR code you scan with your authenticator app, and the second endpoint verifies that your app is producing valid codes before 2FA is activated — returning a set of single-use backup codes that are shown **only once**.
@@ -28,7 +28,7 @@ Call `POST /api/v1/auth/2fa/setup` while authenticated. The server generates a T
 
 **Endpoint**
 
-```
+```http
 POST /api/v1/auth/2fa/setup
 ```
 
@@ -85,7 +85,7 @@ Open your authenticator app and read the 6-digit TOTP code. Call `POST /api/v1/a
 
 **Endpoint**
 
-```
+```http
 POST /api/v1/auth/2fa/confirm-setup
 ```
 
@@ -125,7 +125,7 @@ POST /api/v1/auth/2fa/confirm-setup
 ```
 
 <Warning>
-  Anti-replay protection is active: if you submit the same TOTP code a second time within its 30-second validity window, the request is rejected with `400 Bad Request` even though the code is mathematically valid.
+  Anti-replay protection is active: if you submit the same TOTP code a second time within its validity window (default 30 seconds, configurable via `app.2fa.period`), the request is rejected with `400 Bad Request` even though the code is mathematically valid.
 </Warning>
 
 **curl example**

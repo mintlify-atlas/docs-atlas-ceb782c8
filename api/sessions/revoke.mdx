@@ -1,5 +1,5 @@
 ---
-title: "DELETE /api/v1/auth/sessions/{id} — Revoke a Session"
+title: "Revoke a Session — DELETE /api/v1/auth/sessions/{id}"
 sidebarTitle: "Revoke Session"
 description: "Permanently invalidate a single active session by UUID, or sign out of all devices at once — useful for securing your account after suspicious activity."
 ---
@@ -12,7 +12,7 @@ Auth Backend gives authenticated users full control over their active sessions. 
 
 ### Endpoint
 
-```
+```http
 DELETE /api/v1/auth/sessions/{sessionId}
 ```
 
@@ -74,7 +74,7 @@ curl -X DELETE https://api.example.com/api/v1/auth/sessions/b3a1f2e4-12cd-4a5b-9
 
 ### Endpoint
 
-```
+```http
 POST /api/v1/auth/logout-all
 ```
 

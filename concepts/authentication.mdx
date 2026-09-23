@@ -1,5 +1,5 @@
 ---
-title: "How Authentication Works in Auth Backend"
+title: "JWT Authentication, Cookies, and OAuth2 — Auth Backend"
 sidebarTitle: "Authentication"
 description: "Learn how Auth Backend validates JWTs, issues cookies, manages the Google OAuth2 flow, and protects passwords — from first request to verified session."
 ---
@@ -33,7 +33,7 @@ After extracting the raw JWT string the filter validates it in three stages:
   </Step>
 </Steps>
 
-If any stage fails the filter writes an `application/problem+json` body and returns `HTTP 401` immediately without continuing the filter chain.
+If the token is expired or has an invalid signature, the filter writes an `application/problem+json` body and returns `HTTP 401` immediately. If required claims (`role`, `active`, `uid`, `sid`) are missing, the `active` claim is `false`, or the Redis session lookup fails, the request continues as anonymous — Spring Security's `AuthorizationFilter` then rejects it with `HTTP 401` if the endpoint requires authentication.
 
 ## Token Lifecycle
 
@@ -41,7 +41,7 @@ Auth Backend issues two distinct JWT tokens per session.
 
 <CardGroup cols={2}>
   <Card title="Access Token" icon="bolt">
-    Short-lived credential embedded in the `access_token` cookie (or returned in response body for OAuth2). Expiry is controlled by `jwt.time.expiration` (default: `900000` ms = 15 minutes). Carries `role`, `active`, `uid`, and `sid` claims. Must be refreshed before it expires.
+    Short-lived credential delivered via the `access_token` HttpOnly cookie. Expiry is controlled by `jwt.time.expiration` (default: `900000` ms = 15 minutes). Carries `role`, `active`, `uid`, and `sid` claims. Must be refreshed before it expires.
   </Card>
   <Card title="Refresh Token" icon="arrows-rotate">
     Long-lived credential stored in the `refresh_token` cookie and persisted (hashed) in PostgreSQL. Expiry is controlled by `jwt.time.refresh-expiration` (default: `604800000` ms = 7 days). Used only at `POST /api/v1/auth/refresh`. Rotated on every use.

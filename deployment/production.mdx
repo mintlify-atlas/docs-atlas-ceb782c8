@@ -1,7 +1,7 @@
 ---
-title: "Production Deployment Hardening Guide"
+title: "Auth Backend Production Hardening Checklist"
 sidebarTitle: "Production"
-description: "A structured checklist of security and reliability hardening steps required before deploying Auth Backend to a production environment, with configuration examples."
+description: "Production hardening for Auth Backend: secure cookies, JWT secret, CORS lockdown, Redis TLS, AES-256 key, DDL strategy, and OAuth2 callback configuration."
 ---
 
 Auth Backend ships with development-friendly defaults that prioritise convenience over security. Before exposing the service to real users, you must review and tighten every item on this page. Each section maps to a concrete change in `application.properties`, `SecurityConfig.java`, or your infrastructure, and includes the exact property name or code reference so nothing is ambiguous.
@@ -18,7 +18,7 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
   <Step title="Secure cookies">
     The application sets an `access_token` and a `refresh_token` as `HttpOnly` cookies. In development they are sent over plain HTTP (`app.cookie.secure=false`). In production, cookies must be restricted to HTTPS-only connections and tightened against CSRF via the `SameSite` policy.
 
-    ```properties application-prod.properties
+    ```properties
     app.cookie.secure=true
     app.cookie.same-site=Strict
     ```
@@ -31,15 +31,15 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
   </Step>
 
   <Step title="Use a strong JWT secret">
-    The development placeholder (`clave_de_desarrollo_reemplazar_en_produccion_32chars_min`) must be replaced before deployment. The JWT library (jjwt 0.12.6) requires the HMAC-SHA secret to be at least 256 bits (32 bytes) for HS256.
+    The development placeholder (`clave_de_desarrollo_reemplazar_en_produccion_32chars_min`) must be replaced before deployment. The JWT library (jjwt) requires the HMAC-SHA secret to be at least 256 bits (32 bytes) for HS256.
 
     Generate a strong secret:
-    ```bash generate-jwt-secret.sh
+    ```bash
     openssl rand -base64 48
     ```
 
-    Set it via an environment variable injected at startup — never hard-code it in a committed properties file:
-    ```properties application-prod.properties
+    Set it in `application.properties` (or a profile-specific override) via an environment variable injected at startup — never hard-code it in a committed file:
+    ```properties
     jwt.secret=${JWT_SECRET}
     jwt.time.expiration=900000
     jwt.time.refresh-expiration=604800000
@@ -51,27 +51,26 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
   <Step title="Restrict CORS to your production domain">
     `SecurityConfig.java` currently allows `http://localhost:3000` and `http://localhost:4200` as CORS origins:
 
-    ```java SecurityConfig.java (development)
+    ```java
     config.setAllowedOrigins(List.of("http://localhost:3000", "http://localhost:4200"));
+    // reemplazar en prod por la url de frontend
     ```
 
-    In production you must replace that list with your actual frontend domain. The comment in the source file confirms this: `// reemplazar en prod por la url de frontend`.
+    In production you must replace that list with your actual frontend domain:
 
-    Update `SecurityConfig.java` to read the allowed origins from an environment variable or a profile-specific property, for example:
-
-    ```java SecurityConfig.java (production pattern)
+    ```java
     config.setAllowedOrigins(List.of("https://app.yourdomain.com"));
     ```
 
     <Warning>
-      Never use `*` (wildcard) for `allowedOrigins` when `allowCredentials` is `true`. Spring Security will reject that configuration, and for good reason — it would allow any site to make credentialed requests to your API.
+      Never use `*` (wildcard) for `allowedOrigins` when `allowCredentials` is `true`. Spring Security will reject that configuration — and for good reason, as it would allow any site to make credentialed requests to your API.
     </Warning>
   </Step>
 
   <Step title="Enable Redis TLS and authentication">
-    The development compose stack runs Redis without a password or TLS. In production, connect to a secured Redis instance. The commented-out lines in `application.properties` show exactly what to set:
+    The development Compose stack runs Redis without a password or TLS. In production, connect to a secured Redis instance. The commented-out lines in `application.properties` show exactly what to set:
 
-    ```properties application-prod.properties
+    ```properties
     spring.data.redis.host=${REDIS_HOST}
     spring.data.redis.port=${REDIS_PORT}
     spring.data.redis.password=${REDIS_PASSWORD}
@@ -87,11 +86,11 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
     `app.encryption.secret-key` is a 32-byte Base64-encoded AES-256 key used to encrypt TOTP secrets and 2FA backup codes before they are written to the database. Every deployment must have its own unique key.
 
     Generate a key:
-    ```bash generate-aes-key.sh
+    ```bash
     openssl rand -base64 32
     ```
 
-    ```properties application-prod.properties
+    ```properties
     app.encryption.secret-key=${ENCRYPTION_SECRET_KEY}
     ```
 
@@ -100,27 +99,27 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
     </Warning>
   </Step>
 
-  <Step title="Register the production OAuth2 callback URL">
-    The Google OAuth2 redirect URI must be registered in [Google Cloud Console](https://console.cloud.google.com/) under **APIs & Services → Credentials → Authorised redirect URIs**.
+  <Step title="Configure OAuth2 redirect targets">
+    The `OAuth2SuccessHandler` and `OAuth2FailureHandler` read their redirect URLs from the Spring properties `app.oauth2.redirect-uri.success` and `app.oauth2.redirect-uri.failure`. Set these in your production properties file (or inject them via `SPRING_APPLICATION_JSON`):
 
-    For production, add:
+    ```properties
+    app.oauth2.redirect-uri.success=https://app.yourdomain.com/auth/callback
+    app.oauth2.redirect-uri.failure=https://app.yourdomain.com/login
+    app.oauth2.redirect-uri.two-factor=https://app.yourdomain.com/auth/verify-2fa
+    ```
+
+    The Google OAuth2 redirect URI must also be registered in [Google Cloud Console](https://console.cloud.google.com/) under **APIs & Services → Credentials → Authorised redirect URIs**:
+
     ```
     https://yourdomain.com/login/oauth2/code/google
     ```
 
-    Then set the corresponding Spring properties (via environment variable or secrets manager):
+    Then set the Google credentials (via environment variable or secrets manager):
 
-    ```properties application-prod.properties
+    ```properties
     spring.security.oauth2.client.registration.google.client-id=${GOOGLE_CLIENT_ID}
     spring.security.oauth2.client.registration.google.client-secret=${GOOGLE_CLIENT_SECRET}
     spring.security.oauth2.client.registration.google.scope=openid,email,profile
-    ```
-
-    Update the OAuth2 redirect targets as well:
-    ```properties application-prod.properties
-    # Set these via environment variables
-    # OAUTH2_REDIRECT_SUCCESS=https://app.yourdomain.com/auth/callback
-    # OAUTH2_REDIRECT_FAILURE=https://app.yourdomain.com/login
     ```
 
     <Info>
@@ -128,16 +127,15 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
     </Info>
   </Step>
 
-  <Step title="Use a production-grade PostgreSQL instance">
+  <Step title="Harden the PostgreSQL connection">
     The development configuration targets `localhost:5432` with placeholder credentials. In production:
 
     - Use a managed PostgreSQL 17 service (RDS, Cloud SQL, Supabase, etc.) or a dedicated server.
-    - Use a non-default port if possible.
     - Use strong, randomly generated credentials.
-    - Change `spring.jpa.hibernate.ddl-auto` from `update` to `validate`. `update` mutates your schema on startup — appropriate for development, dangerous in production if a migration goes wrong.
+    - Change `spring.jpa.hibernate.ddl-auto` from `update` to `validate`. The `update` setting mutates your schema on startup — appropriate for development, dangerous in production.
     - Disable SQL logging to avoid leaking query structures to log aggregators.
 
-    ```properties application-prod.properties
+    ```properties
     spring.datasource.url=jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
     spring.datasource.username=${POSTGRES_USER}
     spring.datasource.password=${POSTGRES_PASSWORD}
@@ -148,6 +146,10 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
     spring.jpa.properties.highlight_sql=false
     spring.jpa.open-in-view=false
     ```
+
+    <Note>
+      `POSTGRES_HOST` and `POSTGRES_PORT` are not defined in the default `application.properties`. Add them to your production properties file or inject them as environment variables when targeting a remote database host.
+    </Note>
   </Step>
 
   <Step title="Never commit secrets to source control">
@@ -162,7 +164,7 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
   <Step title="Reduce application log verbosity">
     The default `application.properties` sets `logging.level.com.vc.auth_backend=INFO`, which can include sensitive request details. In production, raise the threshold and ship logs to a centralised system (Datadog, Grafana Loki, AWS CloudWatch, etc.) with access controls.
 
-    ```properties application-prod.properties
+    ```properties
     logging.level.com.vc.auth_backend=WARN
     logging.level.org.springframework.security=WARN
     logging.level.org.hibernate.SQL=WARN
@@ -174,14 +176,14 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
   </Step>
 
   <Step title="Confirm virtual threads are enabled">
-    `application.properties` already sets `spring.threads.virtual.enabled=true`, which enables Java 21+ virtual threads for Spring MVC's request handling. This improves throughput under high concurrency at no additional cost. Verify your production JVM is Java 21 or later (the project targets Java 25 per `build.gradle.kts`).
+    `application.properties` already sets `spring.threads.virtual.enabled=true`, which enables Java 21+ virtual threads for Spring MVC request handling. This improves throughput under high concurrency at no additional cost. Verify your production JVM is Java 21 or later (the project targets Java 25).
 
-    ```bash verify-java.sh
+    ```bash
     java --version
     # Expected: openjdk 25 ...
     ```
 
-    ```properties application-prod.properties
+    ```properties
     # Already set — confirm it is not overridden in your prod config
     spring.threads.virtual.enabled=true
     ```
@@ -192,18 +194,20 @@ Auth Backend ships with development-friendly defaults that prioritise convenienc
 
 ## Sample `application-prod.properties`
 
-The snippet below consolidates all the hardening changes above into a single profile-specific file. Activate it with `--spring.profiles.active=prod` or `SPRING_PROFILES_ACTIVE=prod`.
+The snippet below consolidates all the hardening changes above into a single profile-specific file. Activate it with `--spring.profiles.active=prod` or the environment variable `SPRING_PROFILES_ACTIVE=prod`.
 
 <Info>
   All `${...}` placeholders must be satisfied by environment variables or a secrets manager before the application starts. The application will fail to start if any required placeholder is unresolved.
 </Info>
 
-```properties application-prod.properties
+```properties
 # ─── Application profile ──────────────────────────────────────────────────────
 spring.application.name=auth
 spring.profiles.active=prod
 
 # ─── Database ─────────────────────────────────────────────────────────────────
+# POSTGRES_HOST and POSTGRES_PORT must be provided as environment variables
+# when connecting to a remote database (not needed for the default docker-compose setup)
 spring.datasource.url=jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
 spring.datasource.username=${POSTGRES_USER}
 spring.datasource.password=${POSTGRES_PASSWORD}
@@ -218,6 +222,7 @@ spring.jpa.open-in-view=false
 spring.threads.virtual.enabled=true
 
 # ─── JWT ──────────────────────────────────────────────────────────────────────
+# JWT_SECRET must be a randomly generated value of at least 32 characters
 jwt.secret=${JWT_SECRET}
 jwt.time.expiration=900000
 jwt.time.refresh-expiration=604800000
@@ -260,8 +265,9 @@ spring.security.oauth2.client.registration.google.client-secret=${GOOGLE_CLIENT_
 spring.security.oauth2.client.registration.google.scope=openid,email,profile
 
 # ─── OAuth2 redirect targets ──────────────────────────────────────────────────
-# Consumed by OAuth2SuccessHandler / OAuth2FailureHandler
-# OAUTH2_REDIRECT_SUCCESS and OAUTH2_REDIRECT_FAILURE must be set as env vars
+app.oauth2.redirect-uri.success=https://app.yourdomain.com/auth/callback
+app.oauth2.redirect-uri.failure=https://app.yourdomain.com/login
+app.oauth2.redirect-uri.two-factor=https://app.yourdomain.com/auth/verify-2fa
 
 # ─── File upload limits ───────────────────────────────────────────────────────
 spring.servlet.multipart.max-file-size=5MB
@@ -285,7 +291,7 @@ spring.mvc.problemdetails.enabled=true
     `app.cookie.secure=true` and `app.cookie.same-site=Strict` must be set before going live.
   </Card>
   <Card title="JWT Secret" icon="key">
-    Minimum 32 characters, randomly generated, stored in a secrets manager, never committed.
+    Minimum 32 characters, randomly generated, stored in a secrets manager, never committed to source control.
   </Card>
   <Card title="CORS Origins" icon="globe">
     Replace `localhost` origins in `SecurityConfig.java` with your production frontend domain.
@@ -294,7 +300,7 @@ spring.mvc.problemdetails.enabled=true
     `spring.data.redis.ssl.enabled=true` + `spring.data.redis.password` for all non-dev environments.
   </Card>
   <Card title="AES Encryption Key" icon="lock">
-    Unique 32-byte Base64 key per deployment. Back it up; rotation requires data migration.
+    Unique 32-byte Base64 key per deployment. Back it up; rotation requires a data migration.
   </Card>
   <Card title="DDL Strategy" icon="table">
     Change `spring.jpa.hibernate.ddl-auto` from `update` to `validate` in production.

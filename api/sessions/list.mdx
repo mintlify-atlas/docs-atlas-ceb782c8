@@ -14,7 +14,7 @@ Auth Backend exposes a session management API that lets authenticated users audi
 
 ## Endpoint
 
-```
+```http
 GET /api/v1/auth/sessions
 ```
 
@@ -130,7 +130,7 @@ Returns a JSON array of session objects. The array is ordered by `lastUsedAt` de
 
 ## Notes on the `current` Flag
 
-The server determines `current` by comparing the refresh token from the incoming `refresh_token` cookie against each session's stored token hash. If the cookie is absent (for example when authenticating with only a Bearer token), no session will be marked `current: true` and the flag will be `false` for all entries.
+The server determines `current` by comparing the raw refresh token value from the incoming `refresh_token` cookie against each session's stored token. If the cookie is absent — for example when authenticating with only a Bearer token — no session will be marked `current: true` and the flag will be `false` for all entries.
 
 ---
 

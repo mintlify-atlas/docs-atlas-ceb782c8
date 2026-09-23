@@ -1,7 +1,7 @@
 ---
-title: "Environment Variables Reference for Auth Backend"
+title: "Auth Backend Environment Variables Reference"
 sidebarTitle: "Environment Variables"
-description: "Complete reference for every environment variable consumed by Auth Backend, including database, Redis, Cloudinary, email, security, and OAuth2 redirect settings."
+description: "All environment variables for Auth Backend: database, Redis, Cloudinary, email, OTP TTL, AES-256 encryption key, and OAuth2 Spring property configuration."
 ---
 
 Auth Backend externalises every secret and environment-specific value through OS environment variables, which are injected into `application.properties` via Spring's `${VAR}` placeholder syntax. This page lists each variable, its purpose, valid values, and whether it is required at runtime.
@@ -35,11 +35,11 @@ These three variables are consumed both by the `docker-compose.yml` service defi
 Auth Backend stores temporary codes (OTPs, email-verification tokens, pre-auth 2FA tokens, and used TOTP nonces) in Redis. Both variables must resolve to a reachable Redis instance.
 
 <ParamField body="REDIS_HOST" type="string" required>
-  Hostname or IP address of the Redis server. When using the bundled Docker Compose file locally, set this to `localhost`. In a container-to-container setup (e.g. Docker network), use the service name `redis`.
+  Hostname or IP address of the Redis server. When running the application outside Docker (e.g. `./gradlew bootRun`) against the bundled Compose stack, set this to `localhost`. In a container-to-container setup use the service name `redis`.
 </ParamField>
 
 <ParamField body="REDIS_PORT" type="integer" required>
-  TCP port Redis listens on. The standard port is `6379`, which matches the Docker Compose mapping.
+  TCP port Redis listens on. The standard port is `6379`, which matches the Docker Compose port mapping.
 </ParamField>
 
 ---
@@ -75,7 +75,7 @@ Auth Backend uses [Resend](https://resend.com) to deliver OTP recovery emails an
 </ParamField>
 
 <ParamField body="OTP_EXPIRATION_MINUTES" type="integer" required>
-  Number of minutes before a password-recovery OTP code expires in Redis. The README shows `10` as the default local value. Keep this short (5–15 minutes) in production.
+  Number of minutes before a password-recovery OTP code expires in Redis. A value of `10` is typical for local development. Keep this short (5–15 minutes) in production.
 </ParamField>
 
 ---
@@ -85,7 +85,7 @@ Auth Backend uses [Resend](https://resend.com) to deliver OTP recovery emails an
 <ParamField body="ENCRYPTION_SECRET_KEY" type="string" required>
   A Base64-encoded 32-byte (256-bit) AES key used to encrypt TOTP secrets and backup codes at rest in the database. Generate a unique value per deployment with:
 
-  ```bash generate-key.sh
+  ```bash
   openssl rand -base64 32
   ```
 
@@ -94,17 +94,23 @@ Auth Backend uses [Resend](https://resend.com) to deliver OTP recovery emails an
 
 ---
 
-## OAuth2 Redirects
+## OAuth2 Redirect Targets
 
-After Google completes the OAuth2 flow, Spring Security calls the configured success or failure handler, which reads these two URLs to decide where to redirect the user's browser.
+After Google completes the OAuth2 flow, Spring Security invokes `OAuth2SuccessHandler` or `OAuth2FailureHandler`, which read their redirect URLs from Spring properties — not directly from environment variables. Set these in `application.properties` (or a profile-specific override), substituting your frontend URLs:
 
-<ParamField body="OAUTH2_REDIRECT_SUCCESS" type="string" required>
-  Absolute URL of the frontend page that should receive the authenticated session. The success handler sets the `access_token` and `refresh_token` cookies before redirecting here. Example: `https://app.example.com/auth/callback`.
-</ParamField>
+| Property | Purpose |
+|---|---|
+| `app.oauth2.redirect-uri.success` | URL the browser is redirected to after a successful OAuth2 login. The `access_token` and `refresh_token` cookies are set before this redirect. Example: `https://app.example.com/auth/callback`. |
+| `app.oauth2.redirect-uri.failure` | URL the browser is redirected to when Google OAuth2 fails (e.g. user denied consent). Example: `https://app.example.com/login`. |
+| `app.oauth2.redirect-uri.two-factor` | URL for the 2FA challenge screen when a Google-authenticated user has TOTP enabled. Defaults to `http://localhost:4200/auth/verify-2fa` if not set. |
 
-<ParamField body="OAUTH2_REDIRECT_FAILURE" type="string" required>
-  Absolute URL to redirect the browser when Google OAuth2 fails (e.g. user denied consent, or the state cookie was missing). Example: `https://app.example.com/login`.
-</ParamField>
+For local development in `application.properties`:
+
+```properties
+app.oauth2.redirect-uri.success=http://localhost:3000/auth/callback
+app.oauth2.redirect-uri.failure=http://localhost:3000/login
+app.oauth2.redirect-uri.two-factor=http://localhost:3000/auth/verify-2fa
+```
 
 ---
 
@@ -115,7 +121,7 @@ The following properties are set directly in `application.properties` (or a prof
 <Accordion title="JWT settings">
 | Property | Development default | Notes |
 |---|---|---|
-| `jwt.secret` | `clave_de_desarrollo_reemplazar_en_produccion_32chars_min` | Must be replaced with a strong random value of at least 32 characters. Store in a secrets manager. |
+| `jwt.secret` | `clave_de_desarrollo_reemplazar_en_produccion_32chars_min` | Must be replaced with a strong random value of at least 32 characters. Store in a secrets manager and inject at runtime. |
 | `jwt.time.expiration` | `900000` (15 min, milliseconds) | Access token TTL. Keep short. |
 | `jwt.time.refresh-expiration` | `604800000` (7 days, milliseconds) | Refresh token TTL. Adjust to your session policy. |
 </Accordion>
@@ -143,11 +149,11 @@ The redirect URI must be registered in Google Cloud Console. For local developme
 | Property | Default | Notes |
 |---|---|---|
 | `app.2fa.pre-auth-expiration-minutes` | `5` | How long the `pre_auth_token` cookie is valid after a login that triggers 2FA. |
-| `app.email-verification.expiration-minutes` | `15` | TTL for email-verification codes. |
+| `app.email-verification.expiration-minutes` | `15` | TTL for email-verification codes stored in Redis. |
 | `app.otp.expiration-minutes` | `${OTP_EXPIRATION_MINUTES}` | Set via environment variable (see above). |
 </Accordion>
 
-<Accordion title="2FA issuer details">
+<Accordion title="2FA TOTP configuration">
 | Property | Notes |
 |---|---|
 | `app.2fa.issuer` | The issuer name shown in authenticator apps (e.g. `MyApp`). |
@@ -159,9 +165,9 @@ The redirect URI must be registered in Google Cloud Console. For local developme
 
 ## Sample `.env` File
 
-Copy this file to the project root as `.env`, fill in the placeholder values, and ensure it is listed in `.gitignore` before committing.
+Copy this file to the project root as `.env`, fill in the placeholder values, and ensure it is listed in `.gitignore` before committing. Docker Compose loads this file automatically.
 
-```dotenv .env
+```dotenv
 # ─── Database ────────────────────────────────────────────────────────────────
 POSTGRES_USER=auth_user
 POSTGRES_PASSWORD=change_me_strong_password
@@ -184,11 +190,11 @@ OTP_EXPIRATION_MINUTES=10
 # ─── Encryption ──────────────────────────────────────────────────────────────
 # Generate with: openssl rand -base64 32
 ENCRYPTION_SECRET_KEY=REPLACE_WITH_32_BYTE_BASE64_VALUE=
-
-# ─── OAuth2 Redirects ─────────────────────────────────────────────────────────
-OAUTH2_REDIRECT_SUCCESS=http://localhost:3000/auth/callback
-OAUTH2_REDIRECT_FAILURE=http://localhost:3000/login
 ```
+
+<Note>
+  The OAuth2 redirect URLs (`app.oauth2.redirect-uri.success`, `app.oauth2.redirect-uri.failure`, `app.oauth2.redirect-uri.two-factor`) are Spring properties, not Docker environment variables. Set them in `application.properties` or a profile-specific properties file rather than in `.env`.
+</Note>
 
 <Warning>
   The sample values above are placeholders only. Substitute every `change_me_*` or `your_*` value before starting the application. Using default credentials in production is a critical security risk.

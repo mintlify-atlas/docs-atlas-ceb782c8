@@ -1,7 +1,7 @@
 ---
-title: "Run Auth Backend with Docker Compose"
+title: "Run Auth Backend Locally with Docker Compose"
 sidebarTitle: "Docker"
-description: "Spin up PostgreSQL 17 and Redis 7 with Docker Compose, then run the Auth Backend Spring Boot application locally against those services using the Gradle wrapper."
+description: "Run Auth Backend locally with Docker Compose: PostgreSQL 17, Redis 7, Redis Commander, port mappings, named volume, and Gradle wrapper commands explained."
 ---
 
 Auth Backend ships a `docker-compose.yml` that provisions every external infrastructure dependency — PostgreSQL, Redis, and a Redis web UI — so you can run the full stack on your local machine without installing any databases directly. This page walks through the services defined in that file, how to configure them with a `.env` file, and the Gradle commands used to build and run the application.
@@ -15,7 +15,7 @@ Auth Backend ships a `docker-compose.yml` that provisions every external infrast
     Stores users, refresh tokens, sessions, and all persistent application data. Exposed on `localhost:5432`. Data is persisted in the named Docker volume `auth_pg_data` so it survives container restarts.
   </Card>
   <Card title="Redis 7 Alpine" icon="bolt">
-    Stores short-lived data: OTP codes, email-verification tokens, pre-auth 2FA cookies, and used TOTP nonces. Exposed on `localhost:6379`. Persistence is intentionally disabled (`--save "" --appendonly no`) because all data has its own TTL.
+    Stores short-lived data: OTP codes, email-verification tokens, pre-auth 2FA state, and used TOTP nonces. Exposed on `localhost:6379`. Persistence is intentionally disabled (`--save "" --appendonly no`) because all data has its own TTL.
   </Card>
   <Card title="Redis Commander" icon="magnifying-glass">
     A lightweight web UI for browsing Redis keys, available at `http://localhost:8081`. Automatically connects to the `redis` service on the internal Docker network. Useful for debugging token storage during development.
@@ -34,7 +34,7 @@ Auth Backend ships a `docker-compose.yml` that provisions every external infrast
 
 The compose file declares a single named volume:
 
-```yaml docker-compose.yml (volumes section)
+```yaml
 volumes:
   postgres-data:
     name: auth_pg_data
@@ -42,7 +42,7 @@ volumes:
 
 `auth_pg_data` is mounted at `/var/lib/postgresql/data` inside the PostgreSQL container, ensuring your database schema and data persist across `docker compose down` and `docker compose up` cycles. To wipe the database and start fresh, remove the volume explicitly:
 
-```bash reset-db.sh
+```bash
 docker compose down
 docker volume rm auth_pg_data
 ```
@@ -52,7 +52,7 @@ docker volume rm auth_pg_data
 Both PostgreSQL and Redis define health checks. Docker will wait for these to pass before marking the service as healthy.
 
 <Accordion title="PostgreSQL health check">
-```yaml postgres healthcheck
+```yaml
 healthcheck:
   test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
   interval: 10s
@@ -63,7 +63,7 @@ Uses `pg_isready` inside the container. The check passes once PostgreSQL accepts
 </Accordion>
 
 <Accordion title="Redis health check">
-```yaml redis healthcheck
+```yaml
 healthcheck:
   test: ["CMD", "redis-cli", "ping"]
   interval: 10s
@@ -85,7 +85,7 @@ Runs `redis-cli ping` and expects a `PONG` response. The check retries up to fiv
     - **Docker Desktop** (includes Docker Compose v2)
 
     Verify with:
-    ```bash verify-prereqs.sh
+    ```bash
     java --version
     docker --version
     docker compose version
@@ -93,16 +93,16 @@ Runs `redis-cli ping` and expects a `PONG` response. The check retries up to fiv
   </Step>
 
   <Step title="Clone the repository">
-    ```bash clone.sh
+    ```bash
     git clone https://github.com/Christophervc/auth-backend.git
     cd auth-backend
     ```
   </Step>
 
   <Step title="Create the .env file">
-    Copy the sample below into a file named `.env` in the project root and fill in your own values. Docker Compose automatically loads this file.
+    Copy the sample below into a file named `.env` in the project root and fill in your own values. Docker Compose automatically loads this file when you run `docker compose up`.
 
-    ```dotenv .env
+    ```dotenv
     # Database
     POSTGRES_USER=auth_user
     POSTGRES_PASSWORD=change_me_strong_password
@@ -124,11 +124,11 @@ Runs `redis-cli ping` and expects a `PONG` response. The check retries up to fiv
 
     # AES-256 encryption key (generate: openssl rand -base64 32)
     ENCRYPTION_SECRET_KEY=REPLACE_WITH_32_BYTE_BASE64_VALUE=
-
-    # OAuth2 redirect URLs
-    OAUTH2_REDIRECT_SUCCESS=http://localhost:3000/auth/callback
-    OAUTH2_REDIRECT_FAILURE=http://localhost:3000/login
     ```
+
+    <Note>
+      The OAuth2 redirect URLs (`app.oauth2.redirect-uri.success`, `app.oauth2.redirect-uri.failure`) are Spring properties, not Docker environment variables. Set them in `application.properties` or a profile-specific properties file. See [Environment Variables](/deployment/environment-variables) for details.
+    </Note>
 
     <Warning>
       Add `.env` to your `.gitignore` immediately. Never commit real credentials to source control.
@@ -136,14 +136,14 @@ Runs `redis-cli ping` and expects a `PONG` response. The check retries up to fiv
   </Step>
 
   <Step title="Start PostgreSQL and Redis">
-    ```bash start-services.sh
+    ```bash
     docker compose up -d
     ```
 
     The `-d` flag starts the containers in detached mode. Both services include health checks; allow 10–30 seconds for them to become healthy before starting the application.
 
     Confirm all containers are running and healthy:
-    ```bash check-status.sh
+    ```bash
     docker compose ps
     ```
   </Step>
@@ -153,12 +153,12 @@ Runs `redis-cli ping` and expects a `PONG` response. The check retries up to fiv
 
     <Tabs>
       <Tab title="macOS / Linux">
-        ```bash bootrun-unix.sh
+        ```bash
         ./gradlew bootRun
         ```
       </Tab>
       <Tab title="Windows">
-        ```powershell bootrun-windows.ps1
+        ```powershell
         .\gradlew.bat bootRun
         ```
       </Tab>
@@ -182,7 +182,7 @@ Runs `redis-cli ping` and expects a `PONG` response. The check retries up to fiv
 | `docker compose ps` | List running services and their health status. |
 | `docker compose restart redis` | Restart the Redis service without affecting others. |
 
-```bash compose-logs.sh
+```bash
 # Follow all service logs with timestamps
 docker compose logs -f --timestamps
 ```
@@ -195,7 +195,7 @@ The project uses the Gradle Wrapper, so no local Gradle installation is required
 
 <Tabs>
   <Tab title="macOS / Linux">
-    ```bash gradle-unix.sh
+    ```bash
     # Start the application (development mode)
     ./gradlew bootRun
 
@@ -210,7 +210,7 @@ The project uses the Gradle Wrapper, so no local Gradle installation is required
     ```
   </Tab>
   <Tab title="Windows">
-    ```powershell gradle-windows.ps1
+    ```powershell
     # Start the application (development mode)
     .\gradlew.bat bootRun
 
@@ -232,7 +232,7 @@ The project uses the Gradle Wrapper, so no local Gradle installation is required
 
 The production JAR is written to `build/libs/auth_backend-0.0.1-SNAPSHOT.jar` and can be executed with:
 
-```bash run-jar.sh
+```bash
 java -jar build/libs/auth_backend-0.0.1-SNAPSHOT.jar \
   --spring.profiles.active=prod
 ```

@@ -4,7 +4,7 @@ sidebarTitle: "Verify 2FA"
 description: "Submit a TOTP code or backup code to finish a two-factor login. Exchanges the pre_auth_token cookie for full session cookies on success."
 ---
 
-Auth Backend's 2FA verification endpoint is the final step of a login flow where `twoFactorRequired: true` was returned. After a successful password check, the server issues a short-lived `pre_auth_token` cookie that holds the user's identity in Redis until this endpoint exchanges it for real session cookies (`access_token` and `refresh_token`). This page covers the request contract, cookie lifecycle, replay protection, and all error cases.
+Auth Backend's 2FA verification endpoint is the final step of a login flow where `requiresTwoFactor: true` was returned. After a successful password check, the server issues a short-lived `pre_auth_token` cookie that holds the user's identity in Redis until this endpoint exchanges it for real session cookies (`access_token` and `refresh_token`). This page covers the request contract, cookie lifecycle, replay protection, and all error cases.
 
 <Info>
   Tokens **never appear in the response body** — they travel exclusively as HttpOnly cookies. This prevents JavaScript running on the page from reading or leaking session credentials.
@@ -14,7 +14,7 @@ Auth Backend's 2FA verification endpoint is the final step of a login flow where
 
 ## Endpoint
 
-```
+```http
 POST /api/v1/auth/2fa/verify
 ```
 
@@ -113,7 +113,7 @@ curl -X POST https://api.example.com/api/v1/auth/2fa/verify \
 
 ## Replay Protection
 
-TOTP codes are valid for a 30-second window but can be intercepted and resubmitted within that window. Auth Backend stores every consumed TOTP code in Redis for the duration of the TOTP period. A second request carrying the **same code** within that window is rejected even though it is mathematically valid.
+TOTP codes are valid for one period window (default 30 seconds, configurable via `app.2fa.period`) but can be intercepted and resubmitted within that window. Auth Backend stores every consumed TOTP code in Redis for the duration of the TOTP period. A second request carrying the **same code** within that window is rejected even though it is mathematically valid.
 
 Backup codes are consumed from the database on first use and are immediately invalidated — no Redis tracking is needed.
 
@@ -126,6 +126,6 @@ Backup codes are consumed from the database on first use and are immediately inv
 | `400 Bad Request` | `"Pre-auth token is missing. Please login first."` | The `pre_auth_token` cookie is absent or was already consumed. |
 | `400 Bad Request` | `"Invalid or expired pre-auth token"` | The pre-auth token does not exist in Redis (expired or already used). |
 | `400 Bad Request` | `"Invalid 2FA code"` | The TOTP code is wrong, or no backup code matched. |
-| `400 Bad Request` | `"Code already used. Please wait for a new code from your authenticator app."` | TOTP replay detected within the same 30-second window. |
+| `400 Bad Request` | `"Code already used. Please wait for a new code from your authenticator app."` | TOTP replay detected within the same period window. |
 | `400 Bad Request` | `"code"` validation error | `code` is blank or does not match `^[a-zA-Z0-9]{6,10}$`. |
 | `429 Too Many Requests` | `"Too many requests, please wait"` | Rate limit exceeded (5 req / 15 min). |

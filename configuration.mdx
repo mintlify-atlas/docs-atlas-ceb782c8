@@ -1,5 +1,5 @@
 ---
-title: "Configuration Reference for Auth Backend"
+title: "Auth Backend Configuration Reference and Environment Guide"
 sidebarTitle: "Configuration"
 description: "Auth Backend property reference: database, JWT, cookies, Redis, email, OTP, 2FA, encryption, Cloudinary, and Google OAuth2, plus a complete .env template."
 ---
@@ -40,6 +40,10 @@ Auth Backend persists users, refresh tokens, and session metadata in PostgreSQL.
 
 <ParamField body="spring.threads.virtual.enabled" type="boolean" default="true">
   Enables Java 21+ virtual threads for all Spring-managed thread pools, improving throughput under high concurrency.
+</ParamField>
+
+<ParamField body="spring.mvc.problemdetails.enabled" type="boolean" default="true">
+  Activates Spring MVC's native RFC 9457 `ProblemDetail` serialization. Auth Backend relies on this being `true` to produce `application/problem+json` error responses for all validation and exception handlers.
 </ParamField>
 
 ---
