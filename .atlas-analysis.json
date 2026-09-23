@@ -1,0 +1,130 @@
+{
+  "projectType": "api-service",
+  "projectName": "Auth Backend",
+  "projectDescription": "A production-ready Spring Boot REST API providing authentication, session management, two-factor authentication, and user profile management with JWT cookies, Google OAuth2, and Redis-backed rate limiting.",
+  "theme": "luma",
+  "primaryColor": "#2563EB",
+  "lightColor": "#EFF6FF",
+  "darkColor": "#1E3A8A",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/authentication",
+              "concepts/sessions",
+              "concepts/two-factor-auth",
+              "concepts/rate-limiting"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/environment-variables",
+              "deployment/docker",
+              "deployment/production"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api/auth/register",
+              "api/auth/login",
+              "api/auth/logout",
+              "api/auth/refresh",
+              "api/auth/email-verification",
+              "api/auth/password-reset"
+            ]
+          },
+          {
+            "group": "Two-Factor Authentication",
+            "pages": [
+              "api/2fa/setup",
+              "api/2fa/verify",
+              "api/2fa/disable"
+            ]
+          },
+          {
+            "group": "Sessions",
+            "pages": [
+              "api/sessions/list",
+              "api/sessions/revoke"
+            ]
+          },
+          {
+            "group": "Users",
+            "pages": [
+              "api/users/profile",
+              "api/users/avatar",
+              "api/users/admin"
+            ]
+          },
+          {
+            "group": "Errors",
+            "pages": [
+              "api/errors"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "JWT access tokens delivered via HttpOnly cookies or Authorization Bearer header",
+    "Rotating refresh tokens persisted in PostgreSQL and revocable per-session",
+    "Google OAuth2 login with stateless cookie-based authorization request repository",
+    "Email verification via one-time code sent through Resend",
+    "TOTP-based two-factor authentication with QR setup, backup codes, and replay protection",
+    "Per-user session management: up to 4 active sessions with device/OS/IP tracking",
+    "OTP-based password reset that revokes all sessions on success",
+    "Avatar upload with file signature validation, dimension limits, and Cloudinary storage",
+    "Bucket4j + Caffeine rate limiting by operation category, keyed on user ID or client IP",
+    "Role-based access control (USER / ADMIN) enforced at controller and method level",
+    "Uniform RFC 9457 ProblemDetail error responses",
+    "OpenAPI / Swagger UI documentation auto-generated at runtime"
+  ],
+  "publicApiSurface": [
+    "POST /api/v1/auth/register",
+    "POST /api/v1/auth/verify-email",
+    "POST /api/v1/auth/resend-verification",
+    "POST /api/v1/auth/login",
+    "POST /api/v1/auth/refresh",
+    "POST /api/v1/auth/logout",
+    "POST /api/v1/auth/logout-all",
+    "GET /api/v1/auth/sessions",
+    "DELETE /api/v1/auth/sessions/{sessionId}",
+    "POST /api/v1/auth/forgot-password",
+    "POST /api/v1/auth/verify-otp",
+    "POST /api/v1/auth/reset-password",
+    "POST /api/v1/auth/2fa/setup",
+    "POST /api/v1/auth/2fa/confirm-setup",
+    "POST /api/v1/auth/2fa/verify",
+    "POST /api/v1/auth/2fa/disable",
+    "GET /api/v1/users/me",
+    "PATCH /api/v1/users/me",
+    "PATCH /api/v1/users/me/change-password",
+    "DELETE /api/v1/users/me",
+    "PUT /api/v1/users/me/avatar",
+    "DELETE /api/v1/users/me/avatar",
+    "GET /api/v1/users/{id}/public",
+    "GET /api/v1/users (ADMIN)",
+    "PATCH /api/v1/users/{id}/status (ADMIN)",
+    "PATCH /api/v1/users/{id}/role (ADMIN)"
+  ]
+}

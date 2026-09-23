@@ -1,0 +1,195 @@
+---
+title: "Environment Variables Reference for Auth Backend"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for every environment variable consumed by Auth Backend, including database, Redis, Cloudinary, email, security, and OAuth2 redirect settings."
+---
+
+Auth Backend externalises every secret and environment-specific value through OS environment variables, which are injected into `application.properties` via Spring's `${VAR}` placeholder syntax. This page lists each variable, its purpose, valid values, and whether it is required at runtime.
+
+<Note>
+  Never commit real secret values to source control. Use a `.env` file for local development (add it to `.gitignore`) and a secrets manager — such as AWS Secrets Manager, HashiCorp Vault, or Kubernetes Secrets — for staging and production environments.
+</Note>
+
+---
+
+## Database
+
+These three variables are consumed both by the `docker-compose.yml` service definition for PostgreSQL and by the datasource URL in `application.properties`.
+
+<ParamField body="POSTGRES_USER" type="string" required>
+  The PostgreSQL username that the application and Docker health-check use to connect. Example: `auth_user`.
+</ParamField>
+
+<ParamField body="POSTGRES_PASSWORD" type="string" required>
+  Password for `POSTGRES_USER`. Use a strong, randomly generated value in every environment. There is no default; the container will refuse to start without it.
+</ParamField>
+
+<ParamField body="POSTGRES_DB" type="string" required>
+  Name of the database to create (Docker) and to target in the JDBC URL. Example: `auth_db`.
+</ParamField>
+
+---
+
+## Redis
+
+Auth Backend stores temporary codes (OTPs, email-verification tokens, pre-auth 2FA tokens, and used TOTP nonces) in Redis. Both variables must resolve to a reachable Redis instance.
+
+<ParamField body="REDIS_HOST" type="string" required>
+  Hostname or IP address of the Redis server. When using the bundled Docker Compose file locally, set this to `localhost`. In a container-to-container setup (e.g. Docker network), use the service name `redis`.
+</ParamField>
+
+<ParamField body="REDIS_PORT" type="integer" required>
+  TCP port Redis listens on. The standard port is `6379`, which matches the Docker Compose mapping.
+</ParamField>
+
+---
+
+## Cloudinary
+
+User avatars are uploaded to Cloudinary after being validated, stripped of metadata, and re-encoded by the application. All three credentials are required; without them the avatar upload endpoint (`PUT /api/v1/users/me/avatar`) will fail at runtime.
+
+<ParamField body="CLOUDINARY_CLOUD_NAME" type="string" required>
+  The cloud name shown in the Cloudinary dashboard (e.g. `my-cloud`). It appears in all public Cloudinary asset URLs.
+</ParamField>
+
+<ParamField body="CLOUDINARY_API_KEY" type="string" required>
+  Public API key from the Cloudinary console. Does not need to be kept secret on its own, but should not be committed alongside the API secret.
+</ParamField>
+
+<ParamField body="CLOUDINARY_API_SECRET" type="string" required>
+  Secret API key from the Cloudinary console. Treat this value like a password; rotate it immediately if exposed.
+</ParamField>
+
+---
+
+## Email
+
+Auth Backend uses [Resend](https://resend.com) to deliver OTP recovery emails and email-verification codes.
+
+<ParamField body="EMAIL_FROM" type="string" required>
+  The verified sender address used in the `From:` header of all outgoing emails. Must match a domain that is verified in your Resend account. Example: `auth@example.com`.
+</ParamField>
+
+<ParamField body="RESEND_API_KEY" type="string" required>
+  API key obtained from the Resend dashboard. The application uses this to authenticate every email delivery request. Rotate immediately if leaked.
+</ParamField>
+
+<ParamField body="OTP_EXPIRATION_MINUTES" type="integer" required>
+  Number of minutes before a password-recovery OTP code expires in Redis. The README shows `10` as the default local value. Keep this short (5–15 minutes) in production.
+</ParamField>
+
+---
+
+## Security
+
+<ParamField body="ENCRYPTION_SECRET_KEY" type="string" required>
+  A Base64-encoded 32-byte (256-bit) AES key used to encrypt TOTP secrets and backup codes at rest in the database. Generate a unique value per deployment with:
+
+  ```bash generate-key.sh
+  openssl rand -base64 32
+  ```
+
+  If this key is rotated without migrating existing ciphertext, all users with 2FA enabled will lose access to their second factor.
+</ParamField>
+
+---
+
+## OAuth2 Redirects
+
+After Google completes the OAuth2 flow, Spring Security calls the configured success or failure handler, which reads these two URLs to decide where to redirect the user's browser.
+
+<ParamField body="OAUTH2_REDIRECT_SUCCESS" type="string" required>
+  Absolute URL of the frontend page that should receive the authenticated session. The success handler sets the `access_token` and `refresh_token` cookies before redirecting here. Example: `https://app.example.com/auth/callback`.
+</ParamField>
+
+<ParamField body="OAUTH2_REDIRECT_FAILURE" type="string" required>
+  Absolute URL to redirect the browser when Google OAuth2 fails (e.g. user denied consent, or the state cookie was missing). Example: `https://app.example.com/login`.
+</ParamField>
+
+---
+
+## Spring Boot Properties (not environment variables)
+
+The following properties are set directly in `application.properties` (or a profile-specific override). They are not sourced from the environment by default, but **must be reviewed and overridden before deploying to production**.
+
+<Accordion title="JWT settings">
+| Property | Development default | Notes |
+|---|---|---|
+| `jwt.secret` | `clave_de_desarrollo_reemplazar_en_produccion_32chars_min` | Must be replaced with a strong random value of at least 32 characters. Store in a secrets manager. |
+| `jwt.time.expiration` | `900000` (15 min, milliseconds) | Access token TTL. Keep short. |
+| `jwt.time.refresh-expiration` | `604800000` (7 days, milliseconds) | Refresh token TTL. Adjust to your session policy. |
+</Accordion>
+
+<Accordion title="Cookie security">
+| Property | Development default | Production recommendation |
+|---|---|---|
+| `app.cookie.secure` | `false` | Set to `true`; requires HTTPS. |
+| `app.cookie.same-site` | `Lax` | Set to `Strict` for maximum CSRF protection. |
+</Accordion>
+
+<Accordion title="Google OAuth2">
+These must be supplied to enable social login. Register credentials at [Google Cloud Console](https://console.cloud.google.com/).
+
+| Property | Notes |
+|---|---|
+| `spring.security.oauth2.client.registration.google.client-id` | OAuth2 Client ID. |
+| `spring.security.oauth2.client.registration.google.client-secret` | OAuth2 Client Secret. Keep out of source control. |
+| `spring.security.oauth2.client.registration.google.scope` | Set to `openid,email,profile`. |
+
+The redirect URI must be registered in Google Cloud Console. For local development: `http://localhost:8080/login/oauth2/code/google`. For production: `https://yourdomain.com/login/oauth2/code/google`.
+</Accordion>
+
+<Accordion title="2FA and OTP timings">
+| Property | Default | Notes |
+|---|---|---|
+| `app.2fa.pre-auth-expiration-minutes` | `5` | How long the `pre_auth_token` cookie is valid after a login that triggers 2FA. |
+| `app.email-verification.expiration-minutes` | `15` | TTL for email-verification codes. |
+| `app.otp.expiration-minutes` | `${OTP_EXPIRATION_MINUTES}` | Set via environment variable (see above). |
+</Accordion>
+
+<Accordion title="2FA issuer details">
+| Property | Notes |
+|---|---|
+| `app.2fa.issuer` | The issuer name shown in authenticator apps (e.g. `MyApp`). |
+| `app.2fa.digits` | TOTP code length; standard is `6`. |
+| `app.2fa.period` | TOTP period in seconds; standard is `30`. |
+</Accordion>
+
+---
+
+## Sample `.env` File
+
+Copy this file to the project root as `.env`, fill in the placeholder values, and ensure it is listed in `.gitignore` before committing.
+
+```dotenv .env
+# ─── Database ────────────────────────────────────────────────────────────────
+POSTGRES_USER=auth_user
+POSTGRES_PASSWORD=change_me_strong_password
+POSTGRES_DB=auth_db
+
+# ─── Redis ───────────────────────────────────────────────────────────────────
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# ─── Cloudinary ──────────────────────────────────────────────────────────────
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
+
+# ─── Email (Resend) ───────────────────────────────────────────────────────────
+EMAIL_FROM=auth@yourdomain.com
+RESEND_API_KEY=re_your_resend_api_key
+OTP_EXPIRATION_MINUTES=10
+
+# ─── Encryption ──────────────────────────────────────────────────────────────
+# Generate with: openssl rand -base64 32
+ENCRYPTION_SECRET_KEY=REPLACE_WITH_32_BYTE_BASE64_VALUE=
+
+# ─── OAuth2 Redirects ─────────────────────────────────────────────────────────
+OAUTH2_REDIRECT_SUCCESS=http://localhost:3000/auth/callback
+OAUTH2_REDIRECT_FAILURE=http://localhost:3000/login
+```
+
+<Warning>
+  The sample values above are placeholders only. Substitute every `change_me_*` or `your_*` value before starting the application. Using default credentials in production is a critical security risk.
+</Warning>

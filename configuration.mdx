@@ -1,0 +1,333 @@
+---
+title: "Configuration Reference for Auth Backend"
+sidebarTitle: "Configuration"
+description: "Auth Backend property reference: database, JWT, cookies, Redis, email, OTP, 2FA, encryption, Cloudinary, and Google OAuth2, plus a complete .env template."
+---
+
+Auth Backend is configured entirely through Spring Boot's `application.properties` and environment variables. This page documents every property the application reads, organized by subsystem. Sensitive values — secrets, API keys, passwords — must always be supplied via environment variables or a secrets manager and never committed to version control.
+
+<Note>
+  For local development, create `src/main/resources/application-local.properties` and activate it with `--spring.profiles.active=local`. The sample `.env` at the bottom of this page covers all Docker Compose variables.
+</Note>
+
+---
+
+## 1. Database (PostgreSQL)
+
+Auth Backend persists users, refresh tokens, and session metadata in PostgreSQL. The Hibernate DDL mode is set to `update` — the schema is created and migrated automatically on startup.
+
+<ParamField body="spring.datasource.url" type="string" required>
+  JDBC connection URL for the PostgreSQL database.
+
+  **Example:** `jdbc:postgresql://localhost:5432/auth_db`
+</ParamField>
+
+<ParamField body="spring.datasource.username" type="string" required>
+  PostgreSQL user name. In Docker Compose this corresponds to `POSTGRES_USER`.
+</ParamField>
+
+<ParamField body="spring.datasource.password" type="string" required>
+  PostgreSQL password. In Docker Compose this corresponds to `POSTGRES_PASSWORD`.
+</ParamField>
+
+<ParamField body="spring.jpa.hibernate.ddl-auto" type="string" default="update">
+  Hibernate schema management strategy. Use `validate` or a dedicated migration tool (e.g. Flyway) in production.
+</ParamField>
+
+<ParamField body="spring.jpa.open-in-view" type="boolean" default="false">
+  Disables the Open Session In View anti-pattern. Keep this `false`.
+</ParamField>
+
+<ParamField body="spring.threads.virtual.enabled" type="boolean" default="true">
+  Enables Java 21+ virtual threads for all Spring-managed thread pools, improving throughput under high concurrency.
+</ParamField>
+
+---
+
+## 2. JWT
+
+Access tokens are short-lived JWTs signed with an HMAC-SHA key. Refresh tokens are long-lived, stored in PostgreSQL, and rotated on every use.
+
+<ParamField body="jwt.secret" type="string" required>
+  HMAC signing key for JWT generation and validation. Must be at least **32 characters** (256 bits). Use a cryptographically random value in production.
+
+  **Development default:** `clave_de_desarrollo_reemplazar_en_produccion_32chars_min`
+</ParamField>
+
+<ParamField body="jwt.time.expiration" type="integer" default="900000">
+  Access token lifetime in **milliseconds**. Default is `900000` (15 minutes). Short expiry limits the blast radius of a stolen token.
+</ParamField>
+
+<ParamField body="jwt.time.refresh-expiration" type="integer" default="604800000">
+  Refresh token lifetime in **milliseconds**. Default is `604800000` (7 days). Tokens are rotated on use; an idle session expires after this window.
+</ParamField>
+
+---
+
+## 3. Cookies
+
+Auth Backend sets two `HttpOnly` cookies on successful authentication: `access_token` and `refresh_token`. Cookie security attributes are controlled globally.
+
+<ParamField body="app.cookie.secure" type="boolean" default="false">
+  When `true`, cookies are marked `Secure` and are only sent over HTTPS. **Must be `true` in production.**
+</ParamField>
+
+<ParamField body="app.cookie.same-site" type="string" default="Lax">
+  `SameSite` attribute for auth cookies. Accepted values: `Strict`, `Lax`, `None`.
+
+  Use `Strict` for same-origin frontend deployments. Use `None` (requires `Secure=true`) only when the frontend and API are on different domains.
+</ParamField>
+
+---
+
+## 4. Redis
+
+Redis stores all short-lived state: OTP codes, email verification codes, pre-auth tokens during the 2FA login flow, and used TOTP codes (replay prevention). Redis is also used as the Caffeine-backed cache for rate-limit buckets.
+
+<ParamField body="spring.data.redis.host" type="string" required>
+  Hostname or IP of the Redis server. Maps to the `REDIS_HOST` environment variable.
+
+  **Example:** `localhost`
+</ParamField>
+
+<ParamField body="spring.data.redis.port" type="integer" required>
+  Redis port. Maps to the `REDIS_PORT` environment variable.
+
+  **Default:** `6379`
+</ParamField>
+
+<ParamField body="spring.data.redis.connect-timeout" type="string" default="2s">
+  Maximum time to wait when opening a new Redis connection. Spring Boot duration format (e.g. `2s`, `500ms`).
+</ParamField>
+
+<ParamField body="spring.data.redis.timeout" type="string" default="2s">
+  Maximum time to wait for a Redis command response.
+</ParamField>
+
+<Info>
+  In production, enable TLS and password authentication:
+
+  ```properties production-redis.properties
+  spring.data.redis.password=${REDIS_PASSWORD}
+  spring.data.redis.ssl.enabled=true
+  ```
+</Info>
+
+---
+
+## 5. Email
+
+Transactional emails (verification codes and OTP password-reset codes) are sent through [Resend](https://resend.com).
+
+<ParamField body="app.email.from" type="string" required>
+  The `From` address used for all outgoing emails. Maps to `EMAIL_FROM`.
+
+  **Example:** `noreply@yourdomain.com`
+</ParamField>
+
+<ParamField body="resend.api-key" type="string" required>
+  Your Resend API key. Maps to `RESEND_API_KEY`. Starts with `re_`.
+</ParamField>
+
+---
+
+## 6. OTP & Email Verification
+
+<ParamField body="app.otp.expiration-minutes" type="integer" required>
+  Lifetime in minutes of the 6-digit OTP code sent for password recovery. Maps to `OTP_EXPIRATION_MINUTES`.
+
+  **Recommended:** `10`
+</ParamField>
+
+<ParamField body="app.email-verification.expiration-minutes" type="integer" default="15">
+  Lifetime in minutes of the 6-digit code sent to verify a new account's email address.
+</ParamField>
+
+---
+
+## 7. Two-Factor Authentication
+
+Auth Backend uses TOTP (RFC 6238) compatible with any authenticator app (Google Authenticator, Authy, 1Password, etc.). 2FA secrets and backup codes are stored AES-encrypted at rest.
+
+<ParamField body="app.2fa.pre-auth-expiration-minutes" type="integer" default="5">
+  Lifetime in minutes of the `pre_auth_token` cookie issued when a user with 2FA enabled completes the first login step. Must be submitted alongside the TOTP code at `POST /api/v1/auth/2fa/verify`.
+</ParamField>
+
+<ParamField body="app.2fa.issuer" type="string">
+  The issuer name shown in authenticator apps when scanning the QR code.
+
+  **Example:** `AuthBackend`
+</ParamField>
+
+<ParamField body="app.2fa.digits" type="integer" default="6">
+  Number of digits in each TOTP code. The standard and recommended value is `6`.
+</ParamField>
+
+<ParamField body="app.2fa.period" type="integer" default="30">
+  TOTP time-step in seconds. The standard value is `30`. Must match the authenticator app's expectation.
+</ParamField>
+
+---
+
+## 8. Encryption
+
+<ParamField body="app.encryption.secret-key" type="string" required>
+  Base64-encoded 32-byte (256-bit) AES key used to encrypt 2FA secrets and backup codes before persisting them to the database. Maps to `ENCRYPTION_SECRET_KEY`.
+
+  Generate a key with:
+
+  ```bash generate-key.sh
+  openssl rand -base64 32
+  ```
+
+  <Warning>
+    Rotating this key requires re-encrypting every stored 2FA secret. Back it up securely — losing it makes enrolled 2FA secrets unreadable.
+  </Warning>
+</ParamField>
+
+---
+
+## 9. Cloudinary
+
+Avatar images are uploaded to Cloudinary after server-side validation and re-encoding. The previous avatar is deleted from Cloudinary when replaced.
+
+<ParamField body="cloudinary.cloud-name" type="string" required>
+  Your Cloudinary cloud name. Maps to `CLOUDINARY_CLOUD_NAME`.
+</ParamField>
+
+<ParamField body="cloudinary.api-key" type="string" required>
+  Your Cloudinary API key. Maps to `CLOUDINARY_API_KEY`.
+</ParamField>
+
+<ParamField body="cloudinary.api-secret" type="string" required>
+  Your Cloudinary API secret. Maps to `CLOUDINARY_API_SECRET`.
+</ParamField>
+
+File upload limits are controlled by Spring's multipart settings:
+
+<ParamField body="spring.servlet.multipart.max-file-size" type="string" default="5MB">
+  Maximum size of a single uploaded file accepted by the servlet. The application enforces an additional 2 MB limit at the service layer for avatars.
+</ParamField>
+
+<ParamField body="spring.servlet.multipart.max-request-size" type="string" default="10MB">
+  Maximum total size of a multipart request.
+</ParamField>
+
+---
+
+## 10. Google OAuth2
+
+Google OAuth2 requires a registered application in [Google Cloud Console](https://console.cloud.google.com/). The authorized redirect URI for local development is `http://localhost:8080/login/oauth2/code/google`.
+
+<ParamField body="spring.security.oauth2.client.registration.google.client-id" type="string" required>
+  OAuth2 client ID from Google Cloud Console.
+</ParamField>
+
+<ParamField body="spring.security.oauth2.client.registration.google.client-secret" type="string" required>
+  OAuth2 client secret from Google Cloud Console.
+</ParamField>
+
+<ParamField body="spring.security.oauth2.client.registration.google.scope" type="string" default="openid,email,profile">
+  Comma-separated OAuth2 scopes to request. All three scopes are needed for Auth Backend to read the user's email, name, and profile picture.
+</ParamField>
+
+<Info>
+  OAuth2 authorization request state is stored in a cookie (`oauth2_auth_request`) using `HttpCookieOAuth2AuthorizationRequestRepository`, keeping the server fully stateless.
+</Info>
+
+---
+
+## 11. OAuth2 Redirects
+
+After Google completes the OAuth2 flow, Auth Backend sets the session cookies and redirects the browser to one of these configured frontend URLs.
+
+<ParamField body="OAUTH2_REDIRECT_SUCCESS" type="string" required>
+  URL to redirect to after a successful Google login. Auth Backend sets `access_token` and `refresh_token` cookies before this redirect.
+
+  **Example:** `http://localhost:3000/auth/callback`
+</ParamField>
+
+<ParamField body="OAUTH2_REDIRECT_FAILURE" type="string" required>
+  URL to redirect to when Google login fails (user denied access, provider error, etc.).
+
+  **Example:** `http://localhost:3000/login`
+</ParamField>
+
+---
+
+## Complete `.env` Template
+
+Copy this file to the project root as `.env` for Docker Compose and local development. Replace every placeholder with real values before use.
+
+```dotenv .env
+# ─── PostgreSQL ──────────────────────────────────────────────────────────────
+POSTGRES_USER=auth_user
+POSTGRES_PASSWORD=change_me_in_production
+POSTGRES_DB=auth_db
+
+# ─── Redis ───────────────────────────────────────────────────────────────────
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# ─── JWT ─────────────────────────────────────────────────────────────────────
+# Generate with: openssl rand -base64 64
+JWT_SECRET=replace_with_a_strong_random_secret_at_least_32_chars
+
+# ─── Cloudinary ──────────────────────────────────────────────────────────────
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_cloudinary_api_key
+CLOUDINARY_API_SECRET=your_cloudinary_api_secret
+
+# ─── Email (Resend) ──────────────────────────────────────────────────────────
+EMAIL_FROM=noreply@yourdomain.com
+RESEND_API_KEY=re_your_resend_api_key
+
+# ─── OTP / Email Verification TTLs ──────────────────────────────────────────
+OTP_EXPIRATION_MINUTES=10
+
+# ─── AES Encryption ──────────────────────────────────────────────────────────
+# Generate with: openssl rand -base64 32
+ENCRYPTION_SECRET_KEY=base64_encoded_32_byte_aes_key==
+
+# ─── Google OAuth2 ───────────────────────────────────────────────────────────
+GOOGLE_CLIENT_ID=your_google_client_id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+
+# ─── OAuth2 Frontend Redirects ───────────────────────────────────────────────
+OAUTH2_REDIRECT_SUCCESS=http://localhost:3000/auth/callback
+OAUTH2_REDIRECT_FAILURE=http://localhost:3000/login
+```
+
+<Warning>
+  Add `.env` and `application-local.properties` to your `.gitignore`. Never push real credentials to a repository. In production, use a secrets manager (AWS Secrets Manager, HashiCorp Vault, Doppler, etc.) and inject variables at runtime.
+</Warning>
+
+---
+
+## Production Checklist
+
+<AccordionGroup>
+  <Accordion title="Cookie security">
+    Set `app.cookie.secure=true` and `app.cookie.same-site=Strict` (or `None` for cross-origin, with HTTPS). Ensure the API is served over TLS.
+  </Accordion>
+
+  <Accordion title="JWT secret strength">
+    Use a cryptographically random secret of at least 64 characters. Rotate it by deploying a new value — all existing tokens will be invalidated immediately.
+  </Accordion>
+
+  <Accordion title="Redis TLS and authentication">
+    Enable `spring.data.redis.ssl.enabled=true` and set `spring.data.redis.password` when using a managed Redis service or any Redis instance exposed over a network.
+  </Accordion>
+
+  <Accordion title="CORS configuration">
+    The default `SecurityConfig` permits `http://localhost:3000` and `http://localhost:4200`. Update `CorsConfigurationSource` to list your production frontend origin(s) only.
+  </Accordion>
+
+  <Accordion title="Hibernate DDL mode">
+    Change `spring.jpa.hibernate.ddl-auto` from `update` to `validate` in production and manage schema changes through a migration tool like Flyway or Liquibase.
+  </Accordion>
+
+  <Accordion title="Encryption key backup">
+    Back up `app.encryption.secret-key` in a separate, secure location. Losing it makes all stored 2FA secrets and backup codes unreadable.
+  </Accordion>
+</AccordionGroup>

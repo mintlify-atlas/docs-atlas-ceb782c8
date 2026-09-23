@@ -1,0 +1,140 @@
+---
+title: "POST /api/v1/auth/register — Create Account"
+sidebarTitle: "Register"
+description: "Create a new local user account. Sends a 6-digit verification code by email. No session is started until the email address is confirmed."
+---
+
+The Auth Backend **register** endpoint creates a new local user account and dispatches a 6-digit email-verification code via Resend. The account is placed in a pending state — the user cannot log in until the verification step is completed. To protect against email enumeration the response body is identical whether or not the submitted address already exists in the database.
+
+**`POST /api/v1/auth/register`**
+
+## Authentication
+
+No authentication is required. This endpoint is publicly accessible.
+
+## Rate Limit
+
+<Warning>
+  **5 requests per 10 minutes** per IP address. Exceeding this limit returns `429 Too Many Requests` with a `application/problem+json` body.
+</Warning>
+
+## Request Body
+
+All fields are required. Requests that fail Bean Validation return `400 Bad Request`.
+
+<ParamField body="fullName" type="string" required>
+  The user's display name. Must be between **3 and 30 characters**.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  A valid email address. Must match RFC 5321 format. Used as the login identifier.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The account password. Must be **at least 8 characters**, contain **at least one uppercase letter**, and contain **at least one digit**. Hashed with BCrypt cost 12 before storage.
+</ParamField>
+
+<ParamField body="confirmPassword" type="string" required>
+  Must match the `password` field exactly. Validated server-side.
+</ParamField>
+
+### Example Request Body
+
+```json register-body.json
+{
+  "fullName": "Jane Doe",
+  "email": "jane@example.com",
+  "password": "Secret1234",
+  "confirmPassword": "Secret1234"
+}
+```
+
+## Response
+
+### 200 OK
+
+Returns a `MessageResponse` object. The message is the same regardless of whether the email address already exists in the system.
+
+<ResponseField name="message" type="string">
+  A fixed confirmation string. Does not reveal whether the email was already registered.
+
+  Example: `"Registration successful. Please check your email to verify your account."`
+</ResponseField>
+
+```json 200-response.json
+{
+  "message": "Registration successful. Please check your email to verify your account."
+}
+```
+
+## cURL Example
+
+```bash register.sh
+curl -X POST https://api.example.com/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "fullName": "Jane Doe",
+    "email": "jane@example.com",
+    "password": "Secret1234",
+    "confirmPassword": "Secret1234"
+  }'
+```
+
+## What Happens After Registration
+
+<Steps>
+  <Step title="Account created (pending)">
+    A new user record is persisted with `emailVerified = false`. The password is hashed with BCrypt (cost 12) before storage.
+  </Step>
+  <Step title="Verification code dispatched">
+    A 6-digit numeric code is generated, stored in Redis with a 15-minute TTL, and emailed to the submitted address via Resend.
+  </Step>
+  <Step title="Verify email">
+    The user submits the code to `POST /api/v1/auth/verify-email`. On success, `emailVerified` is set to `true`.
+  </Step>
+  <Step title="Log in">
+    The user can now authenticate via `POST /api/v1/auth/login`.
+  </Step>
+</Steps>
+
+## Error Codes
+
+<AccordionGroup>
+  <Accordion title="400 Bad Request — Validation failure">
+    Returned when one or more fields fail Bean Validation. The response uses RFC 9457 `application/problem+json`.
+
+    ```json 400-validation.json
+    {
+      "type": "about:blank",
+      "title": "Bad Request",
+      "status": 400,
+      "detail": "Password must contain at least one uppercase letter and one number",
+      "instance": "/api/v1/auth/register"
+    }
+    ```
+
+    Common causes:
+    - `fullName` shorter than 3 or longer than 30 characters
+    - `email` not a valid email format
+    - `password` fewer than 8 characters, missing an uppercase letter, or missing a digit
+    - `confirmPassword` blank or missing
+  </Accordion>
+
+  <Accordion title="429 Too Many Requests — Rate limit exceeded">
+    Returned when the IP has exceeded 5 registration attempts in 10 minutes.
+
+    ```json 429-rate-limit.json
+    {
+      "type": "about:blank",
+      "title": "Rate Limit Exceeded",
+      "status": 429,
+      "detail": "Too many requests, please wait",
+      "instance": "/api/v1/auth/register"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  Even if the email is already registered the response is always `200 OK` with the same message. This is intentional to prevent user enumeration attacks.
+</Note>

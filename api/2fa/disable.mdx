@@ -1,0 +1,100 @@
+---
+title: "POST /api/v1/auth/2fa/disable — Turn Off 2FA"
+sidebarTitle: "Disable 2FA"
+description: "Deactivate TOTP two-factor authentication on your account. Requires a valid TOTP code and revokes all active sessions as a security measure."
+---
+
+Auth Backend's 2FA disable endpoint lets an authenticated user permanently deactivate TOTP two-factor authentication on their account. To prevent an attacker who has only stolen a session token from silently downgrading account security, the server requires a **live TOTP code** as proof of physical access to the authenticator app. As a further safety measure, **all active sessions are revoked** after 2FA is disabled, forcing a fresh login on every device.
+
+<Warning>
+  Disabling 2FA immediately revokes all of your active sessions — including the one you are currently using. You will be required to log in again with your password after this call. Plan accordingly if you are calling this from a client that relies on the current session.
+</Warning>
+
+---
+
+## Endpoint
+
+```
+POST /api/v1/auth/2fa/disable
+```
+
+---
+
+## Authentication
+
+**Required.** Bearer token (`Authorization: Bearer <jwt>`) or `access_token` HttpOnly cookie.
+
+---
+
+## Rate Limit
+
+All `/api/v1/auth/2fa/**` endpoints share a single bucket: **5 requests per 15 minutes** per authenticated user. Exceeding the limit returns `429 Too Many Requests` with an `application/problem+json` body.
+
+---
+
+## Request
+
+**Content-Type:** `application/json`
+
+<ParamField body="code" type="string" required>
+  The current 6-digit TOTP code shown by your authenticator app. Must match `^[a-zA-Z0-9]{6,10}$`. Backup codes are **not** accepted for this operation.
+</ParamField>
+
+```json disable-2fa-request.json
+{
+  "code": "291047"
+}
+```
+
+---
+
+## Response
+
+### `200 OK`
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation string: `"2FA has been disabled successfully"`.
+</ResponseField>
+
+```json 200 Response Body
+{
+  "message": "2FA has been disabled successfully"
+}
+```
+
+**What happens on success:**
+
+1. The TOTP code is verified against the stored (AES-encrypted) secret.
+2. `twoFactorEnabled` is set to `false` on the user record.
+3. `twoFactorSecret` is set to `null` — the secret is permanently erased.
+4. `backupCodesJson` is set to `null` — all backup codes are permanently erased.
+5. **All active refresh tokens (sessions) for this user are revoked.**
+
+---
+
+## curl Example
+
+```bash disable-2fa.sh
+curl -X POST https://api.example.com/api/v1/auth/2fa/disable \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "291047"}'
+```
+
+---
+
+## Re-enabling 2FA
+
+After disabling, you can start a new enrollment at any time by calling `POST /api/v1/auth/2fa/setup` again once you have logged in. A fresh secret and new backup codes will be generated.
+
+---
+
+## Error Codes
+
+| Status | `application/problem+json` detail | Cause |
+|--------|----------------------------------|-------|
+| `400 Bad Request` | `"Invalid TOTP code"` | The submitted code does not match the stored TOTP secret. |
+| `400 Bad Request` | `"2FA is not enabled"` | 2FA is already disabled on this account. |
+| `400 Bad Request` | `"code"` validation error | `code` is blank or does not match `^[a-zA-Z0-9]{6,10}$`. |
+| `401 Unauthorized` | — | Missing or invalid authentication token. |
+| `429 Too Many Requests` | `"Too many requests, please wait"` | Rate limit exceeded (5 req / 15 min). |

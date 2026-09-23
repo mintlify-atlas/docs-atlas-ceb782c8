@@ -1,0 +1,153 @@
+---
+title: "POST /api/v1/auth/logout — End User Sessions"
+sidebarTitle: "Logout"
+description: "Revoke the current session or all active sessions at once. Both endpoints clear auth cookies and invalidate refresh tokens stored in PostgreSQL."
+---
+
+The Auth Backend provides two **logout** endpoints. `POST /api/v1/auth/logout` revokes the session associated with the `refresh_token` cookie sent in the current request and is safe to call even when the user is not authenticated. `POST /api/v1/auth/logout-all` revokes every active session belonging to the authenticated user — useful for a "sign out everywhere" security action. Both endpoints clear all auth-related HttpOnly cookies from the client.
+
+## Rate Limit
+
+Both endpoints fall under the **general** rate limit bucket: **90 requests per minute** per IP address or authenticated user ID.
+
+---
+
+## POST /api/v1/auth/logout
+
+**Revoke the current session.**
+
+### Authentication
+
+No authentication is required. The endpoint reads the `refresh_token` HttpOnly cookie if present. If the cookie is absent or already expired, the call still returns `200 OK` and clears any remaining cookies.
+
+### Request Body
+
+No request body is accepted.
+
+### Response
+
+**200 OK** — The session has been revoked (or was already absent). Auth cookies are cleared.
+
+<ResponseField name="message" type="string">
+  Always `"Logged out successfully"`.
+</ResponseField>
+
+```json 200-logout.json
+{
+  "message": "Logged out successfully"
+}
+```
+
+### Cookies Cleared
+
+The following HttpOnly cookies are expired in the `Set-Cookie` response headers:
+
+| Cookie | Action |
+|---|---|
+| `access_token` | Cleared (Max-Age=0) |
+| `refresh_token` | Cleared (Max-Age=0) |
+| `pre_auth_token` | Cleared (Max-Age=0) |
+
+### cURL Example
+
+```bash logout.sh
+curl -X POST https://api.example.com/api/v1/auth/logout \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -c cookies.txt
+```
+
+---
+
+## POST /api/v1/auth/logout-all
+
+**Revoke all active sessions for the authenticated user.**
+
+### Authentication
+
+<Warning>
+  This endpoint **requires authentication**. Include the `access_token` HttpOnly cookie (set automatically by the browser) or pass the JWT in the `Authorization: Bearer <token>` header. Unauthenticated requests return `401 Unauthorized`.
+</Warning>
+
+### Request Body
+
+No request body is accepted.
+
+### Response
+
+**200 OK** — All sessions are revoked and auth cookies are cleared.
+
+<ResponseField name="message" type="string">
+  Always `"All sessions logged out"`.
+</ResponseField>
+
+```json 200-logout-all.json
+{
+  "message": "All sessions logged out"
+}
+```
+
+### What Gets Revoked
+
+<Steps>
+  <Step title="All refresh tokens invalidated">
+    Every `RefreshToken` record associated with the authenticated user ID is deleted or marked revoked in PostgreSQL.
+  </Step>
+  <Step title="Current cookies cleared">
+    The same three cookies (`access_token`, `refresh_token`, `pre_auth_token`) are expired in the response, ending the current browser session.
+  </Step>
+</Steps>
+
+<Info>
+  Existing access tokens (JWTs) remain cryptographically valid until their 15-minute expiry. Revocation only prevents session renewal via the refresh token. If you need instant invalidation, rotate your JWT secret.
+</Info>
+
+### cURL Examples
+
+<Tabs>
+  <Tab title="Cookie Auth">
+    ```bash logout-all-cookie.sh
+    curl -X POST https://api.example.com/api/v1/auth/logout-all \
+      -b cookies.txt \
+      -c cookies.txt
+    ```
+  </Tab>
+  <Tab title="Bearer Token">
+    ```bash logout-all-bearer.sh
+    curl -X POST https://api.example.com/api/v1/auth/logout-all \
+      -H "Authorization: Bearer <your_access_token>"
+    ```
+  </Tab>
+</Tabs>
+
+## Error Codes
+
+<AccordionGroup>
+  <Accordion title="401 Unauthorized — Not authenticated (logout-all only)">
+    Returned by `POST /api/v1/auth/logout-all` when no valid `access_token` cookie or `Authorization` header is present.
+
+    ```json 401-logout-all.json
+    {
+      "type": "about:blank",
+      "title": "Unauthorized",
+      "status": 401,
+      "detail": "Authentication required",
+      "instance": "/api/v1/auth/logout-all"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 Too Many Requests — Rate limit exceeded">
+    Returned when the general rate limit (90 req/min) is exceeded.
+
+    ```json 429-logout.json
+    {
+      "type": "about:blank",
+      "title": "Rate Limit Exceeded",
+      "status": 429,
+      "detail": "Too many requests, please wait",
+      "instance": "/api/v1/auth/logout"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

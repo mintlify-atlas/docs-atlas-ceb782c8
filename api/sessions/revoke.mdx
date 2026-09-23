@@ -1,0 +1,140 @@
+---
+title: "DELETE /api/v1/auth/sessions/{id} — Revoke a Session"
+sidebarTitle: "Revoke Session"
+description: "Permanently invalidate a single active session by UUID, or sign out of all devices at once — useful for securing your account after suspicious activity."
+---
+
+Auth Backend gives authenticated users full control over their active sessions. The `DELETE /api/v1/auth/sessions/{sessionId}` endpoint lets you invalidate a specific device's session — for example to sign out a lost phone or an unrecognised browser — without disturbing other sessions. If you need to terminate every session at once, use `POST /api/v1/auth/logout-all` instead. This page covers both operations and their security semantics.
+
+---
+
+## Revoke a Single Session
+
+### Endpoint
+
+```
+DELETE /api/v1/auth/sessions/{sessionId}
+```
+
+### Authentication
+
+**Required.** Bearer token (`Authorization: Bearer <jwt>`) or `access_token` HttpOnly cookie. The server enforces **ownership**: you can only revoke sessions that belong to your own account. Attempting to revoke another user's session returns `403 Forbidden`.
+
+### Rate Limit
+
+Falls under the **General** bucket: **90 requests per minute** per authenticated user.
+
+### Path Parameters
+
+<ParamField path="sessionId" type="string (UUID)" required>
+  The UUID of the session to revoke. Obtain this from the `id` field returned by `GET /api/v1/auth/sessions`.
+</ParamField>
+
+### Request Body
+
+None.
+
+### Response — `200 OK`
+
+<ResponseField name="message" type="string">
+  Confirmation string: `"Session revoked successfully"`.
+</ResponseField>
+
+```json 200 Response Body
+{
+  "message": "Session revoked successfully"
+}
+```
+
+**What happens on success:**
+
+- The matching `RefreshToken` row is marked `revoked = true` in PostgreSQL.
+- Any subsequent attempt to use that refresh token for a `POST /auth/refresh` call will be rejected.
+- The access JWT already issued for that session remains technically valid until its short expiry, but the session will not appear in `GET /api/v1/auth/sessions` and cannot be refreshed.
+
+### curl Example
+
+```bash revoke-session.sh
+curl -X DELETE https://api.example.com/api/v1/auth/sessions/b3a1f2e4-12cd-4a5b-9f10-3c7d8e9f0abc \
+  -H "Authorization: Bearer <access_token>"
+```
+
+### Error Codes
+
+| Status | `application/problem+json` detail | Cause |
+|--------|----------------------------------|-------|
+| `401 Unauthorized` | — | Missing or invalid `access_token` / Bearer token. |
+| `403 Forbidden` | — | The session with this ID belongs to a different user. |
+| `404 Not Found` | — | No session with this UUID exists, or it is already revoked/expired. |
+| `429 Too Many Requests` | `"Too many requests, please wait"` | General rate limit exceeded (90 req / min). |
+
+---
+
+## Revoke All Sessions
+
+### Endpoint
+
+```
+POST /api/v1/auth/logout-all
+```
+
+### Authentication
+
+**Required.** Bearer token (`Authorization: Bearer <jwt>`) or `access_token` HttpOnly cookie.
+
+### Rate Limit
+
+Falls under the **General** bucket: **90 requests per minute** per authenticated user.
+
+### Request Body
+
+None.
+
+### Response — `200 OK`
+
+<ResponseField name="message" type="string">
+  Confirmation string: `"All sessions logged out"`.
+</ResponseField>
+
+```json 200 Response Body
+{
+  "message": "All sessions logged out"
+}
+```
+
+<Warning>
+  `POST /api/v1/auth/logout-all` revokes **every** active refresh token for your account — including the session you are currently using. The server also clears your `access_token` and `refresh_token` cookies in the same response. You will need to log in again on all devices.
+</Warning>
+
+**What happens on success:**
+
+1. All non-revoked `RefreshToken` rows for the authenticated user are set to `revoked = true`.
+2. The `access_token` and `refresh_token` cookies are cleared (Max-Age=0) in the response.
+
+### curl Example
+
+```bash logout-all.sh
+curl -X POST https://api.example.com/api/v1/auth/logout-all \
+  -H "Authorization: Bearer <access_token>" \
+  -c cookies.txt -b cookies.txt
+```
+
+### Error Codes
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | Missing or invalid `access_token` / Bearer token. |
+| `429 Too Many Requests` | General rate limit exceeded (90 req / min). |
+
+---
+
+## Choosing the Right Endpoint
+
+<CardGroup cols={2}>
+  <Card title="Revoke a specific session" icon="trash">
+    Use `DELETE /api/v1/auth/sessions/{sessionId}` when you want to sign out a single unrecognised device while keeping all your other sessions intact. Retrieve the session ID from `GET /api/v1/auth/sessions` first.
+  </Card>
+  <Card title="Revoke all sessions" icon="shield-exclamation">
+    Use `POST /api/v1/auth/logout-all` when you suspect your account has been compromised and you need to invalidate every active token immediately, across all devices.
+  </Card>
+</CardGroup>

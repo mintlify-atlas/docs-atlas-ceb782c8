@@ -1,0 +1,242 @@
+---
+title: "Run Auth Backend with Docker Compose"
+sidebarTitle: "Docker"
+description: "Spin up PostgreSQL 17 and Redis 7 with Docker Compose, then run the Auth Backend Spring Boot application locally against those services using the Gradle wrapper."
+---
+
+Auth Backend ships a `docker-compose.yml` that provisions every external infrastructure dependency — PostgreSQL, Redis, and a Redis web UI — so you can run the full stack on your local machine without installing any databases directly. This page walks through the services defined in that file, how to configure them with a `.env` file, and the Gradle commands used to build and run the application.
+
+---
+
+## Services Defined in `docker-compose.yml`
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL 17 Alpine" icon="database">
+    Stores users, refresh tokens, sessions, and all persistent application data. Exposed on `localhost:5432`. Data is persisted in the named Docker volume `auth_pg_data` so it survives container restarts.
+  </Card>
+  <Card title="Redis 7 Alpine" icon="bolt">
+    Stores short-lived data: OTP codes, email-verification tokens, pre-auth 2FA cookies, and used TOTP nonces. Exposed on `localhost:6379`. Persistence is intentionally disabled (`--save "" --appendonly no`) because all data has its own TTL.
+  </Card>
+  <Card title="Redis Commander" icon="magnifying-glass">
+    A lightweight web UI for browsing Redis keys, available at `http://localhost:8081`. Automatically connects to the `redis` service on the internal Docker network. Useful for debugging token storage during development.
+  </Card>
+</CardGroup>
+
+### Port Mappings
+
+| Service | Container Port | Host Port | Access URL |
+|---|---|---|---|
+| `postgres-db` | 5432 | 5432 | `localhost:5432` |
+| `redis` | 6379 | 6379 | `localhost:6379` |
+| `redis-commander` | 8081 | 8081 | `http://localhost:8081` |
+
+### Volume
+
+The compose file declares a single named volume:
+
+```yaml docker-compose.yml (volumes section)
+volumes:
+  postgres-data:
+    name: auth_pg_data
+```
+
+`auth_pg_data` is mounted at `/var/lib/postgresql/data` inside the PostgreSQL container, ensuring your database schema and data persist across `docker compose down` and `docker compose up` cycles. To wipe the database and start fresh, remove the volume explicitly:
+
+```bash reset-db.sh
+docker compose down
+docker volume rm auth_pg_data
+```
+
+### Health Checks
+
+Both PostgreSQL and Redis define health checks. Docker will wait for these to pass before marking the service as healthy.
+
+<Accordion title="PostgreSQL health check">
+```yaml postgres healthcheck
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+```
+Uses `pg_isready` inside the container. The check passes once PostgreSQL accepts connections from `POSTGRES_USER` on `POSTGRES_DB`.
+</Accordion>
+
+<Accordion title="Redis health check">
+```yaml redis healthcheck
+healthcheck:
+  test: ["CMD", "redis-cli", "ping"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+```
+Runs `redis-cli ping` and expects a `PONG` response. The check retries up to five times with a ten-second interval.
+</Accordion>
+
+---
+
+## Step-by-Step Local Setup
+
+<Steps>
+  <Step title="Install prerequisites">
+    Ensure the following are installed and available on your `PATH`:
+
+    - **Java 25** (required by the Gradle toolchain in `build.gradle.kts`)
+    - **Docker Desktop** (includes Docker Compose v2)
+
+    Verify with:
+    ```bash verify-prereqs.sh
+    java --version
+    docker --version
+    docker compose version
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash clone.sh
+    git clone https://github.com/Christophervc/auth-backend.git
+    cd auth-backend
+    ```
+  </Step>
+
+  <Step title="Create the .env file">
+    Copy the sample below into a file named `.env` in the project root and fill in your own values. Docker Compose automatically loads this file.
+
+    ```dotenv .env
+    # Database
+    POSTGRES_USER=auth_user
+    POSTGRES_PASSWORD=change_me_strong_password
+    POSTGRES_DB=auth_db
+
+    # Redis
+    REDIS_HOST=localhost
+    REDIS_PORT=6379
+
+    # Cloudinary
+    CLOUDINARY_CLOUD_NAME=your_cloud_name
+    CLOUDINARY_API_KEY=your_api_key
+    CLOUDINARY_API_SECRET=your_api_secret
+
+    # Email
+    EMAIL_FROM=auth@yourdomain.com
+    RESEND_API_KEY=re_your_resend_api_key
+    OTP_EXPIRATION_MINUTES=10
+
+    # AES-256 encryption key (generate: openssl rand -base64 32)
+    ENCRYPTION_SECRET_KEY=REPLACE_WITH_32_BYTE_BASE64_VALUE=
+
+    # OAuth2 redirect URLs
+    OAUTH2_REDIRECT_SUCCESS=http://localhost:3000/auth/callback
+    OAUTH2_REDIRECT_FAILURE=http://localhost:3000/login
+    ```
+
+    <Warning>
+      Add `.env` to your `.gitignore` immediately. Never commit real credentials to source control.
+    </Warning>
+  </Step>
+
+  <Step title="Start PostgreSQL and Redis">
+    ```bash start-services.sh
+    docker compose up -d
+    ```
+
+    The `-d` flag starts the containers in detached mode. Both services include health checks; allow 10–30 seconds for them to become healthy before starting the application.
+
+    Confirm all containers are running and healthy:
+    ```bash check-status.sh
+    docker compose ps
+    ```
+  </Step>
+
+  <Step title="Run the Spring Boot application">
+    With the Docker services healthy, start the application using the Gradle wrapper:
+
+    <Tabs>
+      <Tab title="macOS / Linux">
+        ```bash bootrun-unix.sh
+        ./gradlew bootRun
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```powershell bootrun-windows.ps1
+        .\gradlew.bat bootRun
+        ```
+      </Tab>
+    </Tabs>
+
+    The application starts on `http://localhost:8080` by default. The Swagger UI is available at `http://localhost:8080/swagger-ui.html` and the OpenAPI JSON spec at `http://localhost:8080/v3/api-docs`.
+  </Step>
+</Steps>
+
+---
+
+## Common Docker Compose Commands
+
+| Command | Effect |
+|---|---|
+| `docker compose up -d` | Start all services in detached mode. |
+| `docker compose down` | Stop and remove containers (data volume is preserved). |
+| `docker compose down -v` | Stop containers **and** delete the `auth_pg_data` volume. |
+| `docker compose logs -f` | Stream combined logs from all services. |
+| `docker compose logs -f postgres-db` | Stream logs from PostgreSQL only. |
+| `docker compose ps` | List running services and their health status. |
+| `docker compose restart redis` | Restart the Redis service without affecting others. |
+
+```bash compose-logs.sh
+# Follow all service logs with timestamps
+docker compose logs -f --timestamps
+```
+
+---
+
+## Gradle Commands
+
+The project uses the Gradle Wrapper, so no local Gradle installation is required. All commands below work from the project root.
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash gradle-unix.sh
+    # Start the application (development mode)
+    ./gradlew bootRun
+
+    # Run all tests (uses embedded H2 + embedded Redis)
+    ./gradlew test
+
+    # Build a production JAR
+    ./gradlew build
+
+    # Build without running tests
+    ./gradlew build -x test
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell gradle-windows.ps1
+    # Start the application (development mode)
+    .\gradlew.bat bootRun
+
+    # Run all tests
+    .\gradlew.bat test
+
+    # Build a production JAR
+    .\gradlew.bat build
+
+    # Build without running tests
+    .\gradlew.bat build -x test
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+  The test suite uses an in-memory H2 database and `embedded-redis` (via `com.github.codemonstur:embedded-redis`), so tests do **not** require the Docker services to be running.
+</Info>
+
+The production JAR is written to `build/libs/auth_backend-0.0.1-SNAPSHOT.jar` and can be executed with:
+
+```bash run-jar.sh
+java -jar build/libs/auth_backend-0.0.1-SNAPSHOT.jar \
+  --spring.profiles.active=prod
+```
+
+<Tip>
+  Pass secrets to the JAR at runtime via environment variables or JVM system properties (`-Djwt.secret=…`). Avoid baking secrets into the JAR or its embedded `application.properties`.
+</Tip>

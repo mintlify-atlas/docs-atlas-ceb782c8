@@ -1,0 +1,111 @@
+---
+title: "Auth Backend: Secure Authentication API for Spring Boot"
+sidebarTitle: "Introduction"
+description: "Auth Backend is a Spring Boot 4 REST API with JWT HttpOnly cookies, rotating refresh tokens, Google OAuth2, TOTP 2FA, per-device sessions, and RBAC."
+---
+
+Auth Backend is a fully-featured authentication and user-management REST API built on **Spring Boot 4** and **Java 25**. It exposes every resource under the base path `/api/v1` and is designed to be dropped in as the security layer for any web or mobile product — handling everything from first-time registration to per-device session revocation, without ever sending raw tokens in response bodies.
+
+## Why Auth Backend?
+
+Building auth correctly is expensive. Auth Backend gives you a battle-tested foundation that covers the most common attack surfaces — credential stuffing, session fixation, account enumeration, 2FA replay, avatar polyglot exploits — while staying small enough to understand and extend.
+
+## Architecture Overview
+
+Auth Backend combines a lean set of battle-proven technologies, each chosen for a specific role:
+
+<CardGroup cols={2}>
+  <Card title="Spring Boot 4 + Java 25" icon="leaf">
+    Reactive-compatible virtual threads (`spring.threads.virtual.enabled=true`), Spring Security filter chain, stateless JWT sessions, and method-level RBAC via `@PreAuthorize`.
+  </Card>
+  <Card title="PostgreSQL 17" icon="database">
+    Persistent storage for users, refresh tokens, and per-device session metadata via Spring Data JPA. Schema managed by Hibernate DDL auto-update.
+  </Card>
+  <Card title="Redis 7" icon="server">
+    Ephemeral store for OTP codes, email-verification codes, pre-auth tokens during 2FA login, and TOTP replay-prevention (used-code tracking).
+  </Card>
+  <Card title="Cloudinary" icon="image">
+    Avatar storage and delivery. Images are validated (signature, dimensions ≤ 2000×2000 px, max 2 MB), re-encoded to strip metadata before upload, and deleted from Cloudinary when replaced or removed.
+  </Card>
+  <Card title="Resend" icon="envelope">
+    Transactional email for account verification codes and OTP password-reset codes.
+  </Card>
+  <Card title="Bucket4j + Caffeine" icon="shield">
+    In-process rate limiting backed by a Caffeine cache. Six distinct limit categories keyed by authenticated user ID or validated client IP.
+  </Card>
+</CardGroup>
+
+## Key Capabilities
+
+<AccordionGroup>
+  <Accordion title="JWT in HttpOnly cookies — no tokens in JavaScript">
+    The `access_token` (short-lived) and `refresh_token` (long-lived) travel exclusively in `HttpOnly` cookies. Clients that cannot use cookies — native apps, CLI tools — may pass `Authorization: Bearer <jwt>` instead. The JWT filter checks the header first and falls back to the cookie.
+  </Accordion>
+
+  <Accordion title="Refresh token rotation">
+    Every `/auth/refresh` call issues a brand-new refresh token and invalidates the previous one. Tokens are persisted in PostgreSQL and are individually revocable. Resetting a password revokes every active session.
+  </Accordion>
+
+  <Accordion title="Google OAuth2">
+    Login starts at `/oauth2/authorization/google`. Spring Security completes the standard OAuth2 authorization-code flow; Auth Backend's success handler writes the same `access_token` / `refresh_token` cookies as a local login before redirecting to the configured frontend URL.
+  </Accordion>
+
+  <Accordion title="TOTP two-factor authentication">
+    Users enroll by scanning a QR code and confirming the first 6-digit code, which activates 2FA and returns one-time backup codes. During login the server issues a short-lived `pre_auth_token` cookie; only after submitting a valid TOTP code are the final session cookies set. Used codes are tracked in Redis to prevent replay.
+  </Accordion>
+
+  <Accordion title="Per-device session management">
+    Each refresh token is tied to a session record that stores device name, OS, device type, and IP address. Up to **4 active sessions** are allowed per user. Users can list all sessions, revoke any individual session remotely, or revoke every session at once.
+  </Accordion>
+
+  <Accordion title="Email verification and OTP password reset">
+    New local accounts receive a 6-digit verification code by email. Password recovery follows the same pattern: a 6-digit OTP is sent, validated in a separate step, and consumed on password reset — which also revokes all active sessions. All responses are identical whether the email exists or not, preventing account enumeration.
+  </Accordion>
+
+  <Accordion title="Avatar uploads with security validation">
+    `PUT /api/v1/users/me/avatar` accepts JPEG, PNG, WEBP, and GIF up to 2 MB. The server verifies the file signature, decodes the image, checks dimensions, and re-encodes it before sending to Cloudinary — eliminating polyglot-file and metadata risks.
+  </Accordion>
+
+  <Accordion title="Rate limiting by operation category">
+    Six independent Bucket4j token-bucket limits — General, Login, Register, OTP Recovery, Email Verification, and 2FA — are applied per authenticated user ID or client IP. Violations return `429 Too Many Requests` with an `application/problem+json` body.
+  </Accordion>
+
+  <Accordion title="Role-based access control (RBAC)">
+    Two roles are defined: `USER` (self-service account operations) and `ADMIN` (user listing, status toggles, role assignment). Admin routes are protected at the controller level via Spring Security's `@PreAuthorize`.
+  </Accordion>
+</AccordionGroup>
+
+## Error Format
+
+All errors follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `ProblemDetail` and are served as `application/problem+json`. Common status codes:
+
+| Status | Meaning |
+|--------|---------|
+| `400` | Validation failure |
+| `401` | Missing or invalid credentials / token |
+| `403` | Insufficient role |
+| `404` | Resource not found |
+| `409` | Conflict (e.g. session limit reached) |
+| `429` | Rate limit exceeded |
+| `503` | External service unavailable (Cloudinary, Resend) |
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, spin up Docker services, and make your first authenticated request in under 10 minutes.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Every environment variable and application property explained, with a ready-to-copy `.env` template.
+  </Card>
+  <Card title="Core Concepts" icon="book" href="/concepts/authentication">
+    Deep-dives into JWT cookies, token rotation, the 2FA pre-auth flow, and session lifecycle.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/auth/register">
+    Full request / response documentation for every endpoint across Auth, 2FA, and User controllers.
+  </Card>
+</CardGroup>
+
+<Note>
+  Interactive API documentation is available at **`http://localhost:8080/swagger-ui.html`** when the application is running locally. The raw OpenAPI spec is served at `/v3/api-docs`.
+</Note>

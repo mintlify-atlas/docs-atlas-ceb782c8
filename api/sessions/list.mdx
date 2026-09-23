@@ -1,0 +1,142 @@
+---
+title: "GET /api/v1/auth/sessions — List Active Sessions"
+sidebarTitle: "List Sessions"
+description: "Retrieve all active sessions for the authenticated user, sorted by most recent activity, with device, OS, IP, and a flag marking the current session."
+---
+
+Auth Backend exposes a session management API that lets authenticated users audit every device and browser that currently holds a valid refresh token for their account. The `GET /api/v1/auth/sessions` endpoint returns the full list of active (non-revoked, non-expired) sessions sorted by `lastUsedAt` descending, so the most recently active session appears first. One session in the list is flagged `current: true` — this is the session that belongs to the refresh token cookie attached to the request making this call.
+
+<Info>
+  Sessions correspond 1-to-1 with refresh tokens stored in PostgreSQL. A session is "active" when its refresh token is neither revoked nor past its expiry date.
+</Info>
+
+---
+
+## Endpoint
+
+```
+GET /api/v1/auth/sessions
+```
+
+---
+
+## Authentication
+
+**Required.** Bearer token (`Authorization: Bearer <jwt>`) or `access_token` HttpOnly cookie.
+
+---
+
+## Rate Limit
+
+This endpoint falls under the **General** bucket: **90 requests per minute** per authenticated user.
+
+---
+
+## Request
+
+No request body. No query parameters.
+
+---
+
+## Response
+
+### `200 OK`
+
+Returns a JSON array of session objects. The array is ordered by `lastUsedAt` descending (most recent first). An empty array `[]` is returned when no active sessions are found (edge case — the current session is always active).
+
+<ResponseField name="id" type="string (UUID)">
+  Unique identifier for the session. Use this value to revoke a specific session via `DELETE /api/v1/auth/sessions/{sessionId}`.
+</ResponseField>
+
+<ResponseField name="deviceName" type="string">
+  The browser or application name parsed from the User-Agent header at login time (e.g. `"Chrome 124"`). May be `null` if the User-Agent was absent or unrecognised.
+</ResponseField>
+
+<ResponseField name="os" type="string">
+  The operating system parsed from the User-Agent header at login time (e.g. `"Windows 11"`, `"macOS 14"`). May be `null` if unrecognised.
+</ResponseField>
+
+<ResponseField name="deviceType" type="string">
+  Device category enum. One of: `DESKTOP`, `MOBILE`, `TABLET`, `UNKNOWN`.
+</ResponseField>
+
+<ResponseField name="ipAddress" type="string">
+  The IPv4 or IPv6 address from which the session was created, resolved from `X-Forwarded-For` or the direct remote address.
+</ResponseField>
+
+<ResponseField name="lastUsedAt" type="string (ISO 8601 instant)">
+  Timestamp of the last time this session's refresh token was used to rotate tokens. Updated on every successful `POST /auth/refresh` call.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string (ISO 8601 instant)">
+  Timestamp when the refresh token (session) was originally created — i.e. when the user logged in on this device.
+</ResponseField>
+
+<ResponseField name="expiresAt" type="string (ISO 8601 instant)">
+  Timestamp when the refresh token expires and the session becomes permanently invalid.
+</ResponseField>
+
+<ResponseField name="current" type="boolean">
+  `true` if this is the session associated with the refresh token cookie sent with the current request. Useful for highlighting the active session in a UI so users know which row they cannot lock themselves out of.
+</ResponseField>
+
+```json 200 Response Example
+[
+  {
+    "id": "b3a1f2e4-12cd-4a5b-9f10-3c7d8e9f0abc",
+    "deviceName": "Chrome 124",
+    "os": "macOS 14",
+    "deviceType": "DESKTOP",
+    "ipAddress": "203.0.113.42",
+    "lastUsedAt": "2025-01-15T10:30:00Z",
+    "createdAt": "2025-01-10T08:00:00Z",
+    "expiresAt": "2025-02-10T08:00:00Z",
+    "current": true
+  },
+  {
+    "id": "c4b2e3f5-23de-5b6c-a021-4d8e9f0a1bcd",
+    "deviceName": "Safari 17",
+    "os": "iOS 17",
+    "deviceType": "MOBILE",
+    "ipAddress": "198.51.100.7",
+    "lastUsedAt": "2025-01-14T22:15:30Z",
+    "createdAt": "2025-01-14T22:10:00Z",
+    "expiresAt": "2025-02-14T22:10:00Z",
+    "current": false
+  }
+]
+```
+
+---
+
+## curl Example
+
+<Tabs>
+  <Tab title="Cookie Auth">
+    ```bash list-sessions-cookie.sh
+    curl -X GET https://api.example.com/api/v1/auth/sessions \
+      --cookie "access_token=<access_token>;refresh_token=<refresh_token>"
+    ```
+  </Tab>
+  <Tab title="Bearer Auth">
+    ```bash list-sessions-bearer.sh
+    curl -X GET https://api.example.com/api/v1/auth/sessions \
+      -H "Authorization: Bearer <access_token>"
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Notes on the `current` Flag
+
+The server determines `current` by comparing the refresh token from the incoming `refresh_token` cookie against each session's stored token hash. If the cookie is absent (for example when authenticating with only a Bearer token), no session will be marked `current: true` and the flag will be `false` for all entries.
+
+---
+
+## Error Codes
+
+| Status | Condition |
+|--------|-----------|
+| `401 Unauthorized` | Missing or invalid `access_token` / Bearer token. |
+| `429 Too Many Requests` | General rate limit exceeded (90 req / min). |

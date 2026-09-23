@@ -1,0 +1,159 @@
+---
+title: "Rate Limiting Strategy and Configuration"
+sidebarTitle: "Rate Limiting"
+description: "How Auth Backend uses Bucket4j and Caffeine for rate limiting: client ID resolution, six bucket types, the 429 ProblemDetail format, and backoff guidance."
+---
+
+Auth Backend protects every endpoint under `/api/v1` with a token-bucket rate limiter built on **Bucket4j** and an in-memory **Caffeine** cache. Different route categories carry different limits so that high-risk operations — like login and password recovery — are more aggressively throttled than general API traffic. This page explains how the rate limiter works, how clients are identified, and how to handle limit errors in your frontend or integration.
+
+## Architecture
+
+The rate limiting logic lives in two classes:
+
+- **`RateLimitFilter`** — a `OncePerRequestFilter` that runs after `JwtAuthenticationFilter`. It resolves the bucket type and client identity for every request, tries to consume one token, and returns `HTTP 429` if the bucket is empty.
+- **`RateLimitingService`** — maintains a Caffeine cache of `Bucket` instances keyed by `"<type>:<clientId>"`. Buckets are created lazily on first access.
+
+```java RateLimitingService.java (excerpt)
+private final Cache<String, Bucket> cache = Caffeine.newBuilder()
+        .maximumSize(100_000)
+        .expireAfterAccess(2, TimeUnit.HOURS)
+        .build();
+```
+
+The cache holds up to 100,000 buckets. Any bucket not accessed for 2 hours is evicted and its counter resets on next access.
+
+<Note>
+  Because Caffeine is an in-memory cache, rate limit state is not shared across multiple instances of the API. If you run more than one replica behind a load balancer, each instance tracks its own counters independently. For shared limits across replicas, replace the Caffeine cache with a Redis-backed Bucket4j implementation.
+</Note>
+
+## Scope
+
+Rate limiting only applies to paths that start with `/api/v1/`. All other paths — including `/swagger-ui/**`, `/v3/api-docs/**`, and `/error` — pass through without consuming any token.
+
+`OPTIONS` requests (CORS preflight) are also exempt:
+
+```java RateLimitFilter.java (excerpt)
+if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+    filterChain.doFilter(request, response);
+    return;
+}
+if (!requestUri.startsWith("/api/v1/")) {
+    filterChain.doFilter(request, response);
+    return;
+}
+```
+
+## Client Identification
+
+The rate limiter keys each bucket to a **client identifier** — either the authenticated user's UUID or the request's IP address.
+
+```java RateLimitFilter.java (excerpt)
+private String resolveClientId(HttpServletRequest request) {
+    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+    if (auth != null && auth.getPrincipal() instanceof CustomUserPrincipal userDetails) {
+        return userDetails.getId().toString();  // UUID string
+    }
+    return extractClientIp(request);
+}
+```
+
+For **authenticated requests** the user's UUID is used. This means a user hitting the API from two different devices shares one bucket — protecting accounts rather than individual IPs.
+
+For **anonymous requests** (login, register, password reset, etc.) the client IP is used, extracted from `X-Forwarded-For` with strict validation:
+
+```java RateLimitFilter.java (excerpt)
+private String extractClientIp(HttpServletRequest request) {
+    String forwarded = request.getHeader("X-Forwarded-For");
+    if (forwarded != null && !forwarded.isBlank()) {
+        String candidate = forwarded.split(",")[0].strip();
+        if (VALID_IP.matcher(candidate).matches()) {
+            return candidate;
+        }
+        log.warn("X-Forwarded-For with invalid value ignored: '{}'", candidate);
+    }
+    return request.getRemoteAddr();
+}
+```
+
+Only the **first** value in a `X-Forwarded-For` list is considered, and it must match a valid IPv4 (`0.0.0.0` – `255.255.255.255`) or IPv6 pattern. An invalid or spoofed value is logged and discarded in favour of `request.getRemoteAddr()`.
+
+<Warning>
+  In a deployment behind a trusted reverse proxy (nginx, AWS ALB, Cloudflare), ensure the proxy strips any client-supplied `X-Forwarded-For` headers and re-writes the header with the real client IP. Failure to do this allows clients to bypass rate limiting by forging the header.
+</Warning>
+
+## Bucket Types and Limits
+
+Each route category maps to a named bucket type. The bucket type is resolved from the request URI before the Caffeine lookup:
+
+| Bucket Type | Matched Paths | Algorithm | Limit |
+|---|---|---|---|
+| `AUTH` | `/api/v1/auth/login` | Interval refill | **10 req / 1 min** |
+| `REGISTER` | `/api/v1/auth/register` | Interval refill | **5 req / 10 min** |
+| `OTP` | `/api/v1/auth/forgot-password`, `/verify-otp`, `/reset-password` | Interval refill | **3 req / 1 hour** |
+| `EMAIL_VERIFICATION` | `/api/v1/auth/verify-email`, `/resend-verification` | Interval refill | **4 req / 1 hour** |
+| `TOTP` | `/api/v1/auth/2fa/**` | Interval refill | **5 req / 15 min** |
+| `GEN` | All other `/api/v1/**` paths | Greedy refill | **90 req / 1 min** |
+
+<Accordion title="Refill strategy differences">
+
+**Greedy refill** (used by `GEN`): tokens are added to the bucket as fast as possible as time passes — up to `capacity`. At `90 req/min` greedy, a burst of 90 requests can be sent immediately and the bucket fills back up at 1.5 tokens per second.
+
+**Interval refill** (used by all other types): the full capacity is restored only at the end of each interval — there is no partial mid-window top-up. This is more appropriate for security-sensitive endpoints because it prevents clients from exploiting fractional token accumulation.
+
+</Accordion>
+
+### Resolution Priority
+
+Paths are matched in this order inside `resolveBucketType()`:
+
+1. `/api/v1/auth/2fa/` → `TOTP`
+2. `/api/v1/auth/forgot-password`, `/api/v1/auth/verify-otp`, `/api/v1/auth/reset-password` → `OTP`
+3. `/api/v1/auth/verify-email`, `/api/v1/auth/resend-verification` → `EMAIL_VERIFICATION`
+4. `/api/v1/auth/register` → `REGISTER`
+5. `/api/v1/auth/login` → `AUTH`
+6. Everything else → `GEN`
+
+Because 2FA paths are checked first, `POST /api/v1/auth/2fa/verify` uses the `TOTP` bucket (5 req / 15 min), not the general bucket.
+
+## HTTP 429 Response Format
+
+When a bucket is exhausted the filter writes a `HTTP 429 Too Many Requests` response with `Content-Type: application/problem+json` (RFC 9457 ProblemDetail):
+
+```json 429 response
+{
+  "type": "about:blank",
+  "title": "Rate Limit Exceeded",
+  "status": 429,
+  "detail": "Too many requests, please wait"
+}
+```
+
+No `Retry-After` header is currently included in the response. Clients should implement backoff (see below).
+
+## Client-Side Backoff Guidance
+
+Receiving a `429` means the bucket for your client ID is empty. The remaining wait time depends on the bucket type — it could be seconds (general) or up to an hour (OTP).
+
+<Tip>
+  Implement **exponential backoff with jitter** when retrying after a `429`. Start with a short base delay (e.g. 1 second) and double it on each retry, adding a random jitter of ±20% to avoid thundering-herd retries.
+</Tip>
+
+```typescript Exponential backoff example
+async function requestWithBackoff(
+  fn: () => Promise<Response>,
+  maxRetries = 5
+): Promise<Response> {
+  let delay = 1000; // 1 second base
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fn();
+    if (res.status !== 429) return res;
+    if (attempt === maxRetries) throw new Error("Rate limit exceeded after retries");
+    const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+    await new Promise(r => setTimeout(r, delay + jitter));
+    delay = Math.min(delay * 2, 60_000); // cap at 60 seconds
+  }
+  throw new Error("Unreachable");
+}
+```
+
+For the `OTP` and `EMAIL_VERIFICATION` buckets (1-hour window) there is no point retrying within the same hour. Show the user a clear message — for example: _"Too many attempts. Please try again in an hour."_

@@ -1,0 +1,166 @@
+---
+title: "Session Management and Token Lifecycle"
+sidebarTitle: "Sessions"
+description: "How Auth Backend models sessions as persisted refresh tokens, enforces a four-session limit, tracks devices, and rotates tokens on every refresh call."
+---
+
+Auth Backend treats every login as a **session**: a refresh token persisted in PostgreSQL that represents a specific device and browser combination. This page covers the full session model, the maximum session cap, device tracking, token rotation mechanics, the 2FA pre-authentication handshake, and how logout works for a single session vs. all sessions.
+
+## The Session Model
+
+Each session corresponds to one row in the `refresh_tokens` table, represented by the `RefreshToken` entity.
+
+<Accordion title="RefreshToken entity fields">
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `UUID` | Primary key; also used as the `sid` claim in the access token |
+| `user` | `User` (FK) | The owning user |
+| `token` | `String` (unique) | The raw refresh JWT string (up to 1000 chars) |
+| `expiryDate` | `Instant` | When the refresh token expires |
+| `revoked` | `boolean` | Whether the token has been explicitly revoked |
+| `deviceName` | `String` | Browser name parsed from the `User-Agent` header |
+| `os` | `String` | Operating system parsed from `User-Agent` |
+| `deviceType` | `DeviceType` enum | `MOBILE`, `DESKTOP`, `TABLET`, or `UNKNOWN` |
+| `ipAddress` | `String` | Client IP at session creation (max 45 chars for IPv6) |
+| `lastUsedAt` | `Instant` | Updated on every token refresh |
+| `createdAt` | `Instant` | Set once on `@PrePersist`; immutable |
+
+</Accordion>
+
+The `id` (UUID) is written into the `sid` claim of every access token issued for that session. The JWT filter checks this `sid` against Redis on every request — if the entry is absent the session is considered revoked and the request is rejected.
+
+## Session Limit
+
+A single user account may have at most **4 active, non-expired sessions** simultaneously. This limit is enforced in `RefreshTokenService.createRefreshToken()`:
+
+```java RefreshTokenService.java (excerpt)
+private static final int MAX_ACTIVE_SESSIONS = 4;
+
+int activeSessions = refreshTokenRepository.countActiveSessionsByUser(user, Instant.now());
+if (activeSessions >= MAX_ACTIVE_SESSIONS) {
+    throw new MaxSessionsExceededException(
+        "Maximum number of sessions allowed, log out of one of your devices");
+}
+```
+
+Before the check, already-expired tokens are purged for that user so stale entries do not count toward the limit. If the cap is reached, the API returns an error and the user must log out of an existing device before logging in again.
+
+<Tip>
+  Users can view and revoke individual sessions from `GET /api/v1/auth/sessions` and `DELETE /api/v1/auth/sessions/{sessionId}`, making it easy to free a slot from a different device.
+</Tip>
+
+## Device Tracking
+
+When a session is created, the `User-Agent` header is parsed by `UserAgentParser` to produce a `DeviceInfo` record:
+
+- **`deviceName`** — browser name (e.g. `Chrome`, `Firefox`, `Safari`)
+- **`os`** — operating system (e.g. `Windows 11`, `macOS 14`, `Android 14`)
+- **`deviceType`** — `MOBILE` / `DESKTOP` / `TABLET` / `UNKNOWN`
+
+The client IP is also captured. In reverse-proxy deployments the `X-Forwarded-For` header is read and the first entry is used.
+
+## Listing Active Sessions
+
+`GET /api/v1/auth/sessions` returns all non-expired, non-revoked sessions for the authenticated user, ordered by most recent activity. Each entry includes a `current` flag:
+
+```json Example session list response
+[
+  {
+    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "deviceName": "Chrome",
+    "os": "Windows 11",
+    "deviceType": "DESKTOP",
+    "ipAddress": "203.0.113.42",
+    "lastUsedAt": "2025-01-15T10:30:00Z",
+    "createdAt": "2025-01-10T08:00:00Z",
+    "expiresAt": "2025-01-17T08:00:00Z",
+    "current": true
+  },
+  {
+    "id": "7b24a1c0-9e3d-4f12-a867-3b0c1d2e4f5a",
+    "deviceName": "Safari",
+    "os": "iOS 18",
+    "deviceType": "MOBILE",
+    "ipAddress": "198.51.100.7",
+    "lastUsedAt": "2025-01-14T18:45:00Z",
+    "createdAt": "2025-01-12T14:20:00Z",
+    "expiresAt": "2025-01-19T14:20:00Z",
+    "current": false
+  }
+]
+```
+
+The `current: true` flag is set by comparing the `refresh_token` cookie in the current request against each stored token. A session with no matching cookie — for example a session listed while the user is calling from a different device — returns `current: false`.
+
+## Token Rotation on Refresh
+
+Calling `POST /api/v1/auth/refresh` triggers a full rotation cycle:
+
+<Steps>
+  <Step title="Read and validate the refresh token">
+    The `refresh_token` cookie is read. The JWT signature is verified and the database record is checked to ensure it is not revoked or expired.
+  </Step>
+  <Step title="Revoke the old token">
+    The existing `RefreshToken` row is marked `revoked = true` and its Redis entry is removed.
+  </Step>
+  <Step title="Issue a new refresh token">
+    A new JWT is generated with a fresh `exp` timestamp. A new `RefreshToken` row is inserted in PostgreSQL and a new Redis entry is created under the new session UUID.
+  </Step>
+  <Step title="Issue a new access token">
+    A new access token is generated embedding the new `sid` from the new refresh token row.
+  </Step>
+  <Step title="Write new cookies">
+    `Set-Cookie` headers replace both `access_token` and `refresh_token` cookies.
+  </Step>
+</Steps>
+
+<Warning>
+  Never reuse a refresh token after calling `/refresh`. The old token is immediately revoked, and presenting it again will result in `HTTP 401`.
+</Warning>
+
+## Single Logout
+
+`POST /api/v1/auth/logout` revokes only the session corresponding to the `refresh_token` cookie in the current request:
+
+1. The refresh token value is read from the cookie.
+2. The matching `RefreshToken` row is marked `revoked = true`.
+3. The Redis entry for that session UUID is deleted.
+4. Both `access_token` and `refresh_token` cookies are cleared from the browser with `Max-Age=0`.
+
+The user remains logged in on all other devices.
+
+## Logout All Sessions
+
+`POST /api/v1/auth/logout-all` requires a valid access token (the user must be authenticated):
+
+1. All `RefreshToken` rows belonging to the user are set to `revoked = true` in a single batch update.
+2. Every corresponding Redis entry is deleted.
+3. Both cookies are cleared from the current browser.
+
+All existing access tokens for the user become unauthenticated within seconds, as soon as their `sid` is no longer found in Redis.
+
+## 2FA Pre-Authentication Session
+
+When a user with TOTP 2FA enabled submits their password at `POST /api/v1/auth/login`, no full session is created yet. Instead:
+
+<Steps>
+  <Step title="First-factor validated">
+    Email and password are verified. Because 2FA is enabled, the service does **not** issue `access_token` or `refresh_token` cookies.
+  </Step>
+  <Step title="pre_auth_token issued">
+    A UUID is generated and stored in Redis under a key that maps to the user's email. The expiry is controlled by `app.2fa.pre-auth-expiration-minutes` (default: `5` minutes). The UUID is written to the browser as the `pre_auth_token` HttpOnly cookie.
+  </Step>
+  <Step title="Client presents TOTP code">
+    The browser sends `POST /api/v1/auth/2fa/verify` with the 6-digit TOTP code in the request body. The `pre_auth_token` cookie is read server-side.
+  </Step>
+  <Step title="Full session created">
+    If the code is valid, the `pre_auth_token` entry is deleted from Redis, `pre_auth_token` cookie is cleared, and a full session is created: `access_token` and `refresh_token` cookies are written and the `RefreshToken` row is persisted.
+  </Step>
+</Steps>
+
+The same pre-auth handshake applies to Google OAuth2 users who have 2FA enabled: the OAuth2 success handler issues a `pre_auth_token` cookie and redirects to the 2FA verification page instead of issuing full session cookies.
+
+<Info>
+  The `pre_auth_token` cookie is scoped to `POST /api/v1/auth/2fa/verify` only. It cannot be used to access any other protected endpoint.
+</Info>

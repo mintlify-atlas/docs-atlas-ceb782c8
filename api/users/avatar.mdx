@@ -1,0 +1,177 @@
+---
+title: "Avatar Upload and Deletion — Profile Image Management"
+sidebarTitle: "Avatar"
+description: "Upload, replace, or remove your profile picture. Images are validated, sanitized, and stored on Cloudinary. Supports JPEG, PNG, WEBP, and GIF up to 2 MB."
+---
+
+The **Auth Backend** provides two avatar endpoints under `/api/v1/users/me/avatar` that let authenticated users manage their profile picture. Uploads are validated against file-signature magic bytes, checked for maximum dimensions, and re-encoded to strip metadata before being stored on Cloudinary. Both endpoints require a valid JWT passed as an `Authorization: Bearer <token>` header or through the `access_token` HttpOnly cookie.
+
+---
+
+## PUT /api/v1/users/me/avatar
+
+Upload a new avatar image or replace an existing one. The request must be sent as `multipart/form-data` with the image in a field named `file`.
+
+<Note>
+  If the user already has an avatar that was uploaded through this system (i.e.
+  it has a Cloudinary public ID), the previous image is **deleted from Cloudinary**
+  before the new one is uploaded. If the current avatar came from a Google OAuth
+  sign-in, only the local database reference is cleared — no remote deletion
+  occurs.
+</Note>
+
+### Image Validation Pipeline
+
+The backend applies a three-layer OWASP-aligned validation pipeline before any upload reaches Cloudinary:
+
+<Steps>
+  <Step title="Magic Byte Check">
+    The raw file bytes are inspected for format signatures (JPEG: `FF D8 FF`,
+    PNG: `89 50 4E 47 0D 0A 1A 0A`, GIF87a/89a, WEBP RIFF header). Files that
+    do not match a supported format are rejected immediately.
+  </Step>
+  <Step title="Dimension Check">
+    The image is partially decoded to read its width and height **before** loading
+    all pixel data into memory. Images exceeding **2000 × 2000 px** are rejected
+    to prevent pixel-flood (decompression bomb) attacks.
+  </Step>
+  <Step title="Re-encoding (Sanitization)">
+    The image is fully decoded and re-encoded using Java's `ImageIO`, stripping
+    all EXIF/metadata and neutralising polyglot file attacks. WEBP images are
+    re-encoded as PNG.
+  </Step>
+</Steps>
+
+### Constraints
+
+| Property | Limit |
+|----------|-------|
+| Accepted formats | JPEG, PNG, WEBP, GIF |
+| Maximum file size | **2 MB** |
+| Maximum dimensions | **2000 × 2000 px** |
+| Content-Type | `multipart/form-data` |
+
+### Request
+
+<ParamField body="file" type="file" required>
+  The image file to upload. Must be a JPEG, PNG, WEBP, or GIF no larger than
+  2 MB and no wider or taller than 2000 px.
+</ParamField>
+
+### Response
+
+Returns the full `UserResponse` object with the updated `avatar` field containing the new Cloudinary HTTPS URL.
+
+<ResponseField name="id" type="string (UUID)">
+  Unique identifier of the user.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  User's first name.
+</ResponseField>
+
+<ResponseField name="lastname" type="string">
+  User's last name.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Email address.
+</ResponseField>
+
+<ResponseField name="phone" type="string">
+  Phone number.
+</ResponseField>
+
+<ResponseField name="language" type="string">
+  Preferred language tag.
+</ResponseField>
+
+<ResponseField name="country" type="string">
+  ISO country code.
+</ResponseField>
+
+<ResponseField name="role" type="string (enum)">
+  `USER` or `ADMIN`.
+</ResponseField>
+
+<ResponseField name="active" type="boolean">
+  Account active status.
+</ResponseField>
+
+<ResponseField name="joinedAt" type="string (ISO 8601 datetime)">
+  UTC timestamp of account creation.
+</ResponseField>
+
+<ResponseField name="avatar" type="string">
+  Updated Cloudinary HTTPS URL for the new avatar.
+</ResponseField>
+
+<ResponseField name="provider" type="string">
+  Authentication provider (`local` or `google`).
+</ResponseField>
+
+<ResponseField name="twoFactorEnabled" type="boolean">
+  Whether TOTP 2FA is active.
+</ResponseField>
+
+### Example
+
+```bash upload-avatar.sh
+curl -X PUT https://api.example.com/api/v1/users/me/avatar \
+  -H "Authorization: Bearer <access_token>" \
+  -F "file=@photo.jpg"
+```
+
+```json 200 OK
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "Jane",
+  "lastname": "Doe",
+  "email": "jane@example.com",
+  "phone": "+15551234567",
+  "language": "en-US",
+  "country": "US",
+  "role": "USER",
+  "active": true,
+  "joinedAt": "2025-01-15T10:30:00",
+  "avatar": "https://res.cloudinary.com/demo/image/upload/v1/avatars/3fa85f64/profile.jpg",
+  "provider": "local",
+  "twoFactorEnabled": false
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `400 Bad Request` | File is empty, format not recognised by magic byte check, dimensions exceed 2000 × 2000 px, corrupt or undecodable image |
+| `401 Unauthorized` | Missing or invalid JWT |
+| `503 Service Unavailable` | Cloudinary upload or deletion failed |
+
+---
+
+## DELETE /api/v1/users/me/avatar
+
+Remove the authenticated user's avatar. If the avatar was uploaded through this system, the corresponding Cloudinary asset is also deleted. If the avatar originated from a Google OAuth sign-in, only the local database reference is cleared — no remote deletion is performed.
+
+<Note>
+  Returns `204 No Content` on success. There is no response body.
+</Note>
+
+### Example
+
+```bash delete-avatar.sh
+curl -X DELETE https://api.example.com/api/v1/users/me/avatar \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```
+HTTP/1.1 204 No Content
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `401 Unauthorized` | Missing or invalid JWT |
+| `503 Service Unavailable` | Cloudinary deletion failed |

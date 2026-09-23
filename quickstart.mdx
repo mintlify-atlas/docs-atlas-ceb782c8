@@ -1,47 +1,282 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Auth Backend in 10 Minutes"
+sidebarTitle: "Quickstart"
+description: "Spin up Auth Backend locally with Docker, register and verify a user, log in with HttpOnly cookie sessions, and call a protected endpoint — step by step."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through every step needed to go from a freshly cloned repository to a fully authenticated session against a running **Auth Backend** instance. You will register a user, verify their email, log in, and call a protected endpoint — all from the terminal.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  ### Confirm prerequisites
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+  Auth Backend requires **Java 25** and **Docker** (with Compose). Verify both are available before continuing:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
+  ```bash check-prerequisites.sh
+  java --version
+  # openjdk 25 ...
+
+  docker --version
+  # Docker version 27.x.x ...
+
+  docker compose version
+  # Docker Compose version v2.x.x ...
+  ```
+
+  <Warning>
+    The project uses Java language features from Java 25. Earlier JDKs will fail to compile. Use [SDKMAN](https://sdkman.io/) or your preferred toolchain manager to install the correct version.
+  </Warning>
+
+  ### Clone the repository
+
+  ```bash clone.sh
+  git clone https://github.com/Christophervc/auth-backend.git
+  cd auth-backend
+  ```
+
+  ### Start PostgreSQL and Redis with Docker Compose
+
+  The provided `docker-compose.yml` runs **PostgreSQL 17**, **Redis 7**, and **Redis Commander** (a Redis GUI on port 8081). All three services are required for Auth Backend to start correctly.
+
+  First, create a `.env` file in the project root so Docker Compose can inject the database credentials:
+
+  ```dotenv .env
+  POSTGRES_USER=auth_user
+  POSTGRES_PASSWORD=change_me_in_production
+  POSTGRES_DB=auth_db
+
+  REDIS_HOST=localhost
+  REDIS_PORT=6379
+  ```
+
+  Then bring the services up:
+
+  ```bash docker-start.sh
+  docker compose up -d
+  ```
+
+  Wait a few seconds, then confirm all containers are healthy:
+
+  ```bash docker-check.sh
+  docker compose ps
+  # NAME                       STATUS
+  # auth-backend               healthy   (postgres)
+  # auth-backend-redis         healthy
+  # auth-backend-redis-commander  running
+  ```
+
+  <Info>
+    Redis Commander is available at `http://localhost:8081` — useful for inspecting OTP codes and pre-auth tokens during development.
+  </Info>
+
+  ### Create your local configuration
+
+  Auth Backend reads secrets from environment variables. Create `src/main/resources/application-local.properties` (or export the variables in your shell) with the values below. See the [Configuration reference](/configuration) for a complete description of every property.
+
+  ```properties application-local.properties
+  # Database — matches the .env values above
+  spring.datasource.url=jdbc:postgresql://localhost:5432/auth_db
+  spring.datasource.username=auth_user
+  spring.datasource.password=change_me_in_production
+
+  # JWT — use a random base64 string of at least 32 characters
+  jwt.secret=replace_with_a_strong_random_secret_min_32_chars
+  jwt.time.expiration=900000
+  jwt.time.refresh-expiration=604800000
+
+  # Redis
+  spring.data.redis.host=localhost
+  spring.data.redis.port=6379
+
+  # Email (Resend)
+  app.email.from=noreply@yourdomain.com
+  resend.api-key=re_your_resend_api_key
+
+  # OTP and email verification TTLs
+  app.otp.expiration-minutes=10
+  app.email-verification.expiration-minutes=15
+
+  # 2FA
+  app.2fa.pre-auth-expiration-minutes=5
+
+  # AES encryption for 2FA secrets and backup codes
+  app.encryption.secret-key=base64_encoded_32_byte_aes_key==
+
+  # Cloudinary
+  cloudinary.cloud-name=your_cloud_name
+  cloudinary.api-key=your_api_key
+  cloudinary.api-secret=your_api_secret
+
+  # Google OAuth2
+  spring.security.oauth2.client.registration.google.client-id=your_google_client_id
+  spring.security.oauth2.client.registration.google.client-secret=your_google_client_secret
+  spring.security.oauth2.client.registration.google.scope=openid,email,profile
+
+  # OAuth2 post-login redirects
+  OAUTH2_REDIRECT_SUCCESS=http://localhost:3000/auth/callback
+  OAUTH2_REDIRECT_FAILURE=http://localhost:3000/login
+
+  # Cookies (dev — disable secure for HTTP localhost)
+  app.cookie.secure=false
+  app.cookie.same-site=Lax
+  ```
+
+  <Warning>
+    Never commit real credentials to version control. The `application-local.properties` file is intended to be git-ignored. In production, supply secrets via environment variables or a secrets manager and enable `app.cookie.secure=true`.
+  </Warning>
+
+  ### Run the application
+
+  <Tabs>
+    <Tab title="macOS / Linux">
+      ```bash run-unix.sh
+      ./gradlew bootRun --args='--spring.profiles.active=local'
+      ```
+    </Tab>
+    <Tab title="Windows">
+      ```powershell run-windows.ps1
+      .\gradlew.bat bootRun --args='--spring.profiles.active=local'
+      ```
+    </Tab>
+  </Tabs>
+
+  When you see a log line containing `Started AuthBackendApplication`, the server is ready on **`http://localhost:8080`**.
+
+  ### Register a new user
+
+  The registration endpoint creates a local account in a pending-verification state and sends a 6-digit code to the provided email. The response is always `200 OK` regardless of whether the email was already registered — this prevents account enumeration.
+
+  **Required fields:**
+  - `fullName` — 3–30 characters
+  - `email` — valid email format
+  - `password` — minimum 8 characters, at least one uppercase letter and one digit
+  - `confirmPassword` — must match `password`
+
+  ```bash register.sh
+  curl -s -X POST http://localhost:8080/api/v1/auth/register \
+    -H "Content-Type: application/json" \
+    -d '{
+      "fullName": "Jane Doe",
+      "email": "jane@example.com",
+      "password": "Secret123",
+      "confirmPassword": "Secret123"
+    }' | jq .
+  ```
+
+  ```json register-response.json
+  {
+    "message": "Registration successful. Please check your email to verify your account."
+  }
+  ```
+
+  <Note>
+    Check the email inbox (or your Resend dashboard / local mail catcher) for the 6-digit verification code. The code expires after the number of minutes set in `app.email-verification.expiration-minutes` (default: 15).
+  </Note>
+
+  ### Verify your email
+
+  Submit the 6-digit code you received together with the email address. This operation is idempotent — calling it a second time on an already-verified account still returns `200 OK`.
+
+  ```bash verify-email.sh
+  curl -s -X POST http://localhost:8080/api/v1/auth/verify-email \
+    -H "Content-Type: application/json" \
+    -d '{
+      "email": "jane@example.com",
+      "code": "482910"
+    }' | jq .
+  ```
+
+  ```json verify-email-response.json
+  {
+    "message": "Email verified successfully. You can now log in."
+  }
+  ```
+
+  ### Log in and capture session cookies
+
+  Pass `-c cookies.txt` to tell curl to store the `HttpOnly` cookies that Auth Backend sets on a successful login. The `access_token` (15-minute JWT) and `refresh_token` (7-day rotating token) are written to that file — **they are never exposed in the JSON response body**.
+
+  ```bash login.sh
+  curl -s -X POST http://localhost:8080/api/v1/auth/login \
+    -H "Content-Type: application/json" \
+    -c cookies.txt \
+    -d '{
+      "email": "jane@example.com",
+      "password": "Secret123"
+    }' | jq .
+  ```
+
+  ```json login-response.json
+  {
+    "message": "Login successful"
+  }
+  ```
+
+  If the account has 2FA enabled the response looks slightly different — see the [2FA documentation](/api/2fa/verify) for the complete flow:
+
+  ```json login-2fa-response.json
+  {
+    "message": "Two-factor authentication required",
+    "requiresTwoFactor": true
+  }
+  ```
+
+  <Tip>
+    Inspect `cookies.txt` after login to confirm `access_token` and `refresh_token` were set. In a browser the cookies are handled automatically; in production mobile apps pass the `Authorization: Bearer <jwt>` header instead.
+  </Tip>
+
+  ### Make an authenticated request
+
+  Use `-b cookies.txt` to replay the session cookies. The `GET /api/v1/users/me` endpoint returns the full profile of the authenticated user.
+
+  ```bash get-me.sh
+  curl -s -X GET http://localhost:8080/api/v1/users/me \
+    -b cookies.txt | jq .
+  ```
+
+  ```json get-me-response.json
+  {
+    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "name": "Jane",
+    "lastname": "Doe",
+    "email": "jane@example.com",
+    "phone": null,
+    "language": null,
+    "country": null,
+    "role": "USER",
+    "active": true,
+    "joinedAt": "2025-01-15T10:30:00",
+    "avatar": null,
+    "provider": "local",
+    "twoFactorEnabled": false
+  }
+  ```
+
+  Congratulations — you have a fully working authenticated session.
+
+  ### Explore with Swagger UI
+
+  Open **[http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html)** in your browser to browse every endpoint interactively. The OpenAPI JSON spec is also available at `http://localhost:8080/v3/api-docs` for import into Postman, Insomnia, or any other HTTP client.
+
+  <Note>
+    Swagger UI lets you authorize with a Bearer token (click **Authorize** in the top-right corner) so you can try protected endpoints directly from the browser without managing cookies manually.
+  </Note>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What's Next?
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Configuration Reference" icon="gear" href="/configuration">
+    Understand every property and environment variable before deploying to staging or production.
+  </Card>
+  <Card title="Authentication API" icon="key" href="/api/auth/login">
+    Full request and response schemas for login, register, refresh, logout, and session management.
+  </Card>
+  <Card title="Two-Factor Auth" icon="shield-halved" href="/api/2fa/setup">
+    Set up TOTP, confirm enrollment, verify login codes, and manage backup codes.
+  </Card>
+  <Card title="User Profiles" icon="user" href="/api/users/profile">
+    Update profile fields, change passwords, upload avatars, and deactivate accounts.
+  </Card>
+</CardGroup>

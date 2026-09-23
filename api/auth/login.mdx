@@ -1,0 +1,189 @@
+---
+title: "POST /api/v1/auth/login — Authenticate a User"
+sidebarTitle: "Login"
+description: "Authenticate with email and password. Sets HttpOnly auth cookies on success, or initiates a 2FA challenge when a second factor is enrolled."
+---
+
+The Auth Backend **login** endpoint authenticates a user by email and password. On success it writes two HttpOnly cookies — `access_token` (15-minute JWT) and `refresh_token` (7-day rotating token) — so the client is immediately authorized for subsequent requests. When the account has two-factor authentication enabled the endpoint instead issues a short-lived `pre_auth_token` cookie and instructs the caller to complete the 2FA challenge at `POST /api/v1/auth/2fa/verify`. Google OAuth2 login is also available as an alternative flow described below.
+
+**`POST /api/v1/auth/login`**
+
+## Authentication
+
+No authentication is required. This endpoint is publicly accessible.
+
+## Rate Limit
+
+<Warning>
+  **10 requests per minute** per IP address (or per user ID once authenticated). Exceeding this limit returns `429 Too Many Requests`.
+</Warning>
+
+## Request Body
+
+<ParamField body="email" type="string" required>
+  The registered email address. Must be a valid email format.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The account password. May not be blank.
+</ParamField>
+
+### Example Request Body
+
+```json login-body.json
+{
+  "email": "jane@example.com",
+  "password": "Secret1234"
+}
+```
+
+## Response
+
+The response shape is determined by whether 2FA is active on the account.
+
+<Tabs>
+  <Tab title="Normal Login (200)">
+    The user is fully authenticated. Two HttpOnly cookies are set on the response:
+
+    | Cookie | Description | TTL |
+    |---|---|---|
+    | `access_token` | Signed JWT for API authorization | 15 minutes |
+    | `refresh_token` | Opaque rotating token for session renewal | 7 days |
+
+    <ResponseField name="message" type="string">
+      A confirmation string, e.g. `"Login successful"`.
+    </ResponseField>
+
+    <ResponseField name="requiresTwoFactor" type="boolean | null">
+      Omitted (null) on a normal login. Only present and `true` when 2FA is required.
+    </ResponseField>
+
+    ```json 200-normal.json
+    {
+      "message": "Login successful"
+    }
+    ```
+  </Tab>
+
+  <Tab title="2FA Required (200)">
+    The credentials were valid but the account has 2FA enabled. A short-lived `pre_auth_token` HttpOnly cookie is set (expires in **5 minutes**). No `access_token` or `refresh_token` is issued yet.
+
+    The caller must submit the TOTP code to `POST /api/v1/auth/2fa/verify` before the session is established.
+
+    <ResponseField name="message" type="string">
+      Indicates that a second factor is needed, e.g. `"Two-factor authentication required"`.
+    </ResponseField>
+
+    <ResponseField name="requiresTwoFactor" type="boolean">
+      Always `true` in this path.
+    </ResponseField>
+
+    ```json 200-2fa.json
+    {
+      "message": "Two-factor authentication required",
+      "requiresTwoFactor": true
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## cURL Examples
+
+<Tabs>
+  <Tab title="Standard Login">
+    ```bash login.sh
+    curl -X POST https://api.example.com/api/v1/auth/login \
+      -H "Content-Type: application/json" \
+      -c cookies.txt \
+      -d '{
+        "email": "jane@example.com",
+        "password": "Secret1234"
+      }'
+    ```
+  </Tab>
+  <Tab title="Inspect Set-Cookie Headers">
+    ```bash login-cookies.sh
+    curl -i -X POST https://api.example.com/api/v1/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{
+        "email": "jane@example.com",
+        "password": "Secret1234"
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+## Google OAuth2 Login
+
+Auth Backend supports Google OAuth2 as an alternative sign-in method. The flow is initiated by redirecting the browser to the authorization endpoint — no request body is required.
+
+**`GET /oauth2/authorization/google`**
+
+<Steps>
+  <Step title="Redirect the browser">
+    Send the user's browser to `GET /oauth2/authorization/google`. Spring Security generates the Google authorization URL and stores state in a short-lived HttpOnly cookie (stateless, no server-side session).
+  </Step>
+  <Step title="Google authentication">
+    The user authenticates on Google's consent screen and is redirected back to `/login/oauth2/code/google` with an authorization code.
+  </Step>
+  <Step title="Token exchange & session creation">
+    Spring Security exchanges the code for an ID token. The OAuth2 success handler creates or links the local user account, then writes `access_token` and `refresh_token` HttpOnly cookies.
+  </Step>
+  <Step title="Redirect to frontend">
+    The response redirects the browser to the configured frontend success URL with the session cookies already set.
+  </Step>
+</Steps>
+
+<Note>
+  OAuth2 accounts do not have a local password. If a user registers with Google and later tries to log in with a password, authentication will fail.
+</Note>
+
+## Error Codes
+
+<AccordionGroup>
+  <Accordion title="400 Bad Request — Validation failure">
+    Returned when the request body fails Bean Validation (e.g. blank email, missing password).
+
+    ```json 400-login.json
+    {
+      "type": "about:blank",
+      "title": "Bad Request",
+      "status": 400,
+      "detail": "Email is mandatory",
+      "instance": "/api/v1/auth/login"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 Unauthorized — Bad credentials or unverified email">
+    Returned when the email/password combination is incorrect, the account does not exist, or the email address has not been verified.
+
+    ```json 401-login.json
+    {
+      "type": "about:blank",
+      "title": "Unauthorized",
+      "status": 401,
+      "detail": "Authentication required",
+      "instance": "/api/v1/auth/login"
+    }
+    ```
+
+    <Tip>
+      If you receive a 401 after registering, check that you have completed the email verification step at `POST /api/v1/auth/verify-email`.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="429 Too Many Requests — Rate limit exceeded">
+    Returned when the IP has exceeded 10 login attempts in 1 minute.
+
+    ```json 429-login.json
+    {
+      "type": "about:blank",
+      "title": "Rate Limit Exceeded",
+      "status": 429,
+      "detail": "Too many requests, please wait",
+      "instance": "/api/v1/auth/login"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

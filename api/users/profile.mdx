@@ -1,0 +1,328 @@
+---
+title: "User Profile Endpoints — View and Update Account"
+sidebarTitle: "Profile"
+description: "Retrieve your full account profile, update editable fields, change your password, deactivate your account, or look up another user's public profile."
+---
+
+The **Auth Backend** exposes a set of profile endpoints under `/api/v1/users` that let authenticated users read and modify their own account data, change their password, self-deactivate their account, and fetch the limited public profile of any other user. All endpoints require a valid JWT delivered either as an `Authorization: Bearer <token>` header or via the `access_token` HttpOnly cookie.
+
+---
+
+## GET /api/v1/users/me
+
+Retrieve the complete profile of the currently authenticated user.
+
+<Note>
+  Requires authentication. No special role is needed — any authenticated user
+  may call this endpoint.
+</Note>
+
+### Response
+
+<ResponseField name="id" type="string (UUID)" required>
+  Unique identifier of the user.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  User's first name.
+</ResponseField>
+
+<ResponseField name="lastname" type="string">
+  User's last name.
+</ResponseField>
+
+<ResponseField name="email" type="string" required>
+  Email address (unique across the system).
+</ResponseField>
+
+<ResponseField name="phone" type="string">
+  Phone number. Format: 5–20 digits, optionally prefixed with `+`.
+</ResponseField>
+
+<ResponseField name="language" type="string">
+  Preferred language tag (e.g. `es-ES`). Defaults to `es-ES`.
+</ResponseField>
+
+<ResponseField name="country" type="string">
+  ISO 3166-1 alpha-2 country code (e.g. `PE`). Defaults to `PE`.
+</ResponseField>
+
+<ResponseField name="role" type="string (enum)" required>
+  Account role. One of `USER`, `ADMIN`.
+</ResponseField>
+
+<ResponseField name="active" type="boolean" required>
+  Whether the account is currently active.
+</ResponseField>
+
+<ResponseField name="joinedAt" type="string (ISO 8601 datetime)" required>
+  UTC timestamp of account creation.
+</ResponseField>
+
+<ResponseField name="avatar" type="string">
+  URL of the user's profile image, or `null` if none is set.
+</ResponseField>
+
+<ResponseField name="provider" type="string" required>
+  Authentication provider. `local` for email/password accounts; `google` for
+  OAuth accounts.
+</ResponseField>
+
+<ResponseField name="twoFactorEnabled" type="boolean" required>
+  Whether TOTP two-factor authentication is active.
+</ResponseField>
+
+### Example
+
+```bash get-profile.sh
+curl -X GET https://api.example.com/api/v1/users/me \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json 200 OK
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "Jane",
+  "lastname": "Doe",
+  "email": "jane@example.com",
+  "phone": "+15551234567",
+  "language": "en-US",
+  "country": "US",
+  "role": "USER",
+  "active": true,
+  "joinedAt": "2025-01-15T10:30:00",
+  "avatar": "https://res.cloudinary.com/demo/image/upload/v1/avatars/...",
+  "provider": "local",
+  "twoFactorEnabled": false
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `401 Unauthorized` | Missing or invalid JWT / expired access token |
+
+---
+
+## PATCH /api/v1/users/me
+
+Partially update the editable fields of the authenticated user's profile. All fields are optional — only provided non-null fields are applied.
+
+<Note>
+  Requires authentication. Fields omitted from the request body are left unchanged.
+</Note>
+
+### Request Body
+
+<ParamField body="name" type="string">
+  First name. 2–50 characters.
+</ParamField>
+
+<ParamField body="lastname" type="string">
+  Last name. 2–80 characters.
+</ParamField>
+
+<ParamField body="phone" type="string">
+  Phone number. Must match `^\+?[0-9]{5,20}$` — 5 to 20 digits, optionally
+  starting with `+`.
+</ParamField>
+
+### Response
+
+Returns the updated `UserResponse` object (same shape as `GET /me` above).
+
+### Example
+
+```bash update-profile.sh
+curl -X PATCH https://api.example.com/api/v1/users/me \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Jane",
+    "lastname": "Smith",
+    "phone": "+15559876543"
+  }'
+```
+
+```json 200 OK
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "Jane",
+  "lastname": "Smith",
+  "email": "jane@example.com",
+  "phone": "+15559876543",
+  "language": "es-ES",
+  "country": "PE",
+  "role": "USER",
+  "active": true,
+  "joinedAt": "2025-01-15T10:30:00",
+  "avatar": null,
+  "provider": "local",
+  "twoFactorEnabled": false
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `400 Bad Request` | Validation failure (e.g. name too short, phone format invalid) |
+| `401 Unauthorized` | Missing or invalid JWT |
+| `404 Not Found` | Authenticated user record not found |
+
+---
+
+## PATCH /api/v1/users/me/change-password
+
+Change the password for the currently authenticated user. Requires the current password for verification. On success, **all existing refresh token sessions are revoked**.
+
+<Warning>
+  This endpoint is only available for accounts registered with the `local`
+  provider. Attempting to call it on a Google OAuth account returns
+  `400 Bad Request` with the title `Operation not available for social accounts`.
+</Warning>
+
+### Request Body
+
+<ParamField body="oldPassword" type="string" required>
+  The user's current password. Required for verification.
+</ParamField>
+
+<ParamField body="newPassword" type="string" required>
+  The desired new password. Must be at least **8 characters** and contain at
+  least **one uppercase letter** and **one number**.
+</ParamField>
+
+### Response
+
+<ResponseField name="message" type="string">
+  `"Password updated successfully"`
+</ResponseField>
+
+### Example
+
+```bash change-password.sh
+curl -X PATCH https://api.example.com/api/v1/users/me/change-password \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "oldPassword": "CurrentPass1",
+    "newPassword": "NewSecurePass9"
+  }'
+```
+
+```json 200 OK
+{
+  "message": "Password updated successfully"
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `400 Bad Request` | Validation failure on `newPassword`, or operation attempted on a social account |
+| `401 Unauthorized` | Missing/invalid JWT, or `oldPassword` is incorrect |
+| `404 Not Found` | User not found |
+
+---
+
+## DELETE /api/v1/users/me
+
+Self-deactivate the authenticated user's account. The account is marked inactive and **all refresh token sessions are immediately revoked**.
+
+<Warning>
+  Admin accounts cannot self-deactivate. Calling this endpoint with an `ADMIN`
+  role returns `409 Conflict`.
+</Warning>
+
+<Note>
+  Deactivation is a soft-delete — the account record is retained in the database
+  with `active: false`. A suspended account cannot log in. Contact an admin
+  to reactivate.
+</Note>
+
+### Response
+
+<ResponseField name="message" type="string">
+  `"Account deactivated successfully"`
+</ResponseField>
+
+### Example
+
+```bash deactivate-account.sh
+curl -X DELETE https://api.example.com/api/v1/users/me \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json 200 OK
+{
+  "message": "Account deactivated successfully"
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `401 Unauthorized` | Missing or invalid JWT |
+| `409 Conflict` | Authenticated user is an ADMIN (admins cannot self-deactivate) |
+
+---
+
+## GET /api/v1/users/{id}/public
+
+Retrieve the limited public profile of any user by their UUID. Inactive user profiles return `404 Not Found`.
+
+<Note>
+  Requires authentication. The response intentionally excludes sensitive fields
+  such as `email`, `phone`, `role`, and `twoFactorEnabled`.
+</Note>
+
+### Path Parameters
+
+<ParamField path="id" type="string (UUID)" required>
+  The UUID of the user whose public profile to retrieve.
+</ParamField>
+
+### Response
+
+<ResponseField name="id" type="string (UUID)" required>
+  Unique identifier of the user.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  User's first name.
+</ResponseField>
+
+<ResponseField name="lastname" type="string">
+  User's last name.
+</ResponseField>
+
+<ResponseField name="joinedAt" type="string (ISO 8601 datetime)" required>
+  UTC timestamp of when the user joined.
+</ResponseField>
+
+### Example
+
+```bash get-public-profile.sh
+curl -X GET https://api.example.com/api/v1/users/3fa85f64-5717-4562-b3fc-2c963f66afa6/public \
+  -H "Authorization: Bearer <access_token>"
+```
+
+```json 200 OK
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "Jane",
+  "lastname": "Doe",
+  "joinedAt": "2025-01-15T10:30:00"
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `401 Unauthorized` | Missing or invalid JWT |
+| `404 Not Found` | No user found with the given ID, or the user account is inactive |

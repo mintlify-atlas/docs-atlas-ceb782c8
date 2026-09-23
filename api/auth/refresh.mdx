@@ -1,0 +1,131 @@
+---
+title: "POST /api/v1/auth/refresh — Rotate Refresh Token"
+sidebarTitle: "Refresh Token"
+description: "Exchange a valid refresh_token cookie for a fresh access token and a new refresh token. The old refresh token is immediately invalidated on use."
+---
+
+The Auth Backend **refresh** endpoint implements single-use, rotating refresh tokens. When called with a valid `refresh_token` HttpOnly cookie, the server invalidates the submitted token, issues a new `access_token` JWT (15 minutes) and a new `refresh_token` (7 days), and updates the `lastUsedAt` timestamp on the session record in PostgreSQL. No request body is required — the token is read exclusively from the HttpOnly cookie, which is never accessible to JavaScript.
+
+**`POST /api/v1/auth/refresh`**
+
+## Authentication
+
+No `Authorization` header is required. The endpoint reads the `refresh_token` HttpOnly cookie automatically. If the cookie is absent, invalid, or expired, the request fails with an error response.
+
+## Rate Limit
+
+This endpoint falls under the **general** rate limit bucket: **90 requests per minute** per IP address or authenticated user ID.
+
+## Request Body
+
+No request body is accepted. The refresh token is sourced entirely from the `refresh_token` HttpOnly cookie.
+
+## Token Rotation
+
+<Steps>
+  <Step title="Validate the refresh token">
+    The server reads the `refresh_token` cookie value, looks it up in PostgreSQL, and checks that it has not been revoked or expired.
+  </Step>
+  <Step title="Invalidate the old token">
+    The existing refresh token record is revoked. Replaying the same token after this point returns `401 Unauthorized`.
+  </Step>
+  <Step title="Issue new tokens">
+    A new signed JWT (`access_token`, 15 min) and a new opaque refresh token (`refresh_token`, 7 days) are generated. The session's `lastUsedAt` timestamp is updated.
+  </Step>
+  <Step title="Write cookies">
+    Both tokens are written as HttpOnly, SameSite cookies on the response. The old cookies are replaced.
+  </Step>
+</Steps>
+
+<Warning>
+  Refresh tokens are **single-use**. If the same token is presented twice — for example due to a network retry — the second request will return `401`. Obtain a new refresh token from the first successful response.
+</Warning>
+
+## Response
+
+### 200 OK
+
+New `access_token` and `refresh_token` HttpOnly cookies are set. The response body is a simple confirmation.
+
+<ResponseField name="message" type="string">
+  Always `"Token refreshed"`.
+</ResponseField>
+
+```json 200-refresh.json
+{
+  "message": "Token refreshed"
+}
+```
+
+### Cookies Set
+
+| Cookie | Description | TTL |
+|---|---|---|
+| `access_token` | New signed JWT for API authorization | 15 minutes |
+| `refresh_token` | New opaque rotating session token | 7 days |
+
+## cURL Example
+
+```bash refresh.sh
+# The refresh_token cookie is sent automatically by the browser.
+# With curl, load/save cookies from a jar file.
+curl -X POST https://api.example.com/api/v1/auth/refresh \
+  -b cookies.txt \
+  -c cookies.txt
+```
+
+<Tip>
+  Implement a client-side interceptor that watches for `401 Unauthorized` responses on authenticated requests, calls this endpoint once, and retries the original request with the new `access_token` cookie. If the refresh itself returns `401`, redirect the user to the login page.
+</Tip>
+
+## Error Codes
+
+<AccordionGroup>
+  <Accordion title="400 Bad Request — Cookie not found">
+    Returned when the `refresh_token` cookie is absent from the request.
+
+    ```json 400-refresh.json
+    {
+      "type": "about:blank",
+      "title": "Bad Request",
+      "status": 400,
+      "detail": "Refresh token cookie not found",
+      "instance": "/api/v1/auth/refresh"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 Unauthorized — Invalid or expired token">
+    Returned when the refresh token has been revoked, does not exist in the database, or has passed its 7-day expiry.
+
+    ```json 401-refresh.json
+    {
+      "type": "about:blank",
+      "title": "Unauthorized",
+      "status": 401,
+      "detail": "Authentication required",
+      "instance": "/api/v1/auth/refresh"
+    }
+    ```
+
+    Common causes:
+    - Token already used (rotation replay)
+    - Manual session revocation via `POST /api/v1/auth/logout` or `POST /api/v1/auth/logout-all`
+    - Password reset (all sessions revoked)
+    - Token expired after 7 days of inactivity
+  </Accordion>
+
+  <Accordion title="429 Too Many Requests — Rate limit exceeded">
+    Returned when the general rate limit (90 req/min) is exceeded.
+
+    ```json 429-refresh.json
+    {
+      "type": "about:blank",
+      "title": "Rate Limit Exceeded",
+      "status": 429,
+      "detail": "Too many requests, please wait",
+      "instance": "/api/v1/auth/refresh"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

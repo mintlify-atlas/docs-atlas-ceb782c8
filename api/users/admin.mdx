@@ -1,0 +1,286 @@
+---
+title: "Admin Endpoints — Manage Users and Roles"
+sidebarTitle: "Admin"
+description: "ADMIN-only endpoints to list all registered users with pagination, activate or deactivate any account, and promote or demote a user's role."
+---
+
+The **Auth Backend** exposes a set of administration endpoints under `/api/v1/users` that are restricted to accounts with the `ADMIN` role. These endpoints allow administrators to browse the full user list, toggle account status, and change user roles. All requests must supply a valid JWT via the `Authorization: Bearer <token>` header or the `access_token` HttpOnly cookie, and the authenticated account must carry the `ADMIN` role — otherwise the server returns `403 Forbidden`.
+
+<Warning>
+  Admins cannot modify their own account status or role through these endpoints.
+  Attempting to do so returns `409 Conflict`.
+</Warning>
+
+---
+
+## GET /api/v1/users
+
+Retrieve a paginated list of all registered users in the system. Results are returned as a Spring Data `Page` object.
+
+<Note>
+  Requires the `ADMIN` role.
+</Note>
+
+### Query Parameters
+
+<ParamField query="page" type="integer" default="0">
+  Zero-based page index. The first page is `0`.
+</ParamField>
+
+<ParamField query="size" type="integer" default="20">
+  Number of users to return per page.
+</ParamField>
+
+### Response
+
+The response is a Spring Data `Page` wrapper around an array of `UserResponse` objects.
+
+<ResponseField name="content" type="array">
+  Array of user objects on the current page. Each element has the shape
+  described below.
+
+  <Expandable title="UserResponse fields">
+    <ResponseField name="id" type="string (UUID)">
+      Unique identifier of the user.
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      First name.
+    </ResponseField>
+    <ResponseField name="lastname" type="string">
+      Last name.
+    </ResponseField>
+    <ResponseField name="email" type="string">
+      Email address.
+    </ResponseField>
+    <ResponseField name="phone" type="string">
+      Phone number.
+    </ResponseField>
+    <ResponseField name="language" type="string">
+      Preferred language tag (e.g. `es-ES`).
+    </ResponseField>
+    <ResponseField name="country" type="string">
+      ISO 3166-1 alpha-2 country code.
+    </ResponseField>
+    <ResponseField name="role" type="string (enum)">
+      `USER` or `ADMIN`.
+    </ResponseField>
+    <ResponseField name="active" type="boolean">
+      Whether the account is active.
+    </ResponseField>
+    <ResponseField name="joinedAt" type="string (ISO 8601 datetime)">
+      UTC timestamp of account creation.
+    </ResponseField>
+    <ResponseField name="avatar" type="string">
+      Profile image URL, or `null`.
+    </ResponseField>
+    <ResponseField name="provider" type="string">
+      `local` or `google`.
+    </ResponseField>
+    <ResponseField name="twoFactorEnabled" type="boolean">
+      Whether TOTP 2FA is active.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="totalElements" type="integer">
+  Total number of users across all pages.
+</ResponseField>
+
+<ResponseField name="totalPages" type="integer">
+  Total number of pages given the current `size`.
+</ResponseField>
+
+<ResponseField name="number" type="integer">
+  Current page index (zero-based).
+</ResponseField>
+
+<ResponseField name="size" type="integer">
+  Number of elements requested per page.
+</ResponseField>
+
+### Example
+
+```bash list-users.sh
+curl -X GET "https://api.example.com/api/v1/users?page=0&size=20" \
+  -H "Authorization: Bearer <admin_access_token>"
+```
+
+```json 200 OK
+{
+  "content": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "name": "Jane",
+      "lastname": "Doe",
+      "email": "jane@example.com",
+      "phone": "+15551234567",
+      "language": "en-US",
+      "country": "US",
+      "role": "USER",
+      "active": true,
+      "joinedAt": "2025-01-15T10:30:00",
+      "avatar": null,
+      "provider": "local",
+      "twoFactorEnabled": false
+    }
+  ],
+  "totalElements": 142,
+  "totalPages": 8,
+  "number": 0,
+  "size": 20
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `401 Unauthorized` | Missing or invalid JWT |
+| `403 Forbidden` | Authenticated account does not have the `ADMIN` role |
+
+---
+
+## PATCH /api/v1/users/{id}/status
+
+Activate or deactivate a user account. When an account is deactivated, **all of that user's refresh token sessions are immediately revoked**.
+
+<Note>
+  Requires the `ADMIN` role. An admin cannot change the status of their own
+  account through this endpoint — doing so returns `409 Conflict`.
+</Note>
+
+### Path Parameters
+
+<ParamField path="id" type="string (UUID)" required>
+  UUID of the user whose status to update.
+</ParamField>
+
+### Request Body
+
+<ParamField body="active" type="boolean" required>
+  Set to `true` to activate the account, or `false` to deactivate it.
+</ParamField>
+
+### Response
+
+Returns the updated `UserResponse` object reflecting the new `active` value.
+
+### Example
+
+<Tabs>
+  <Tab title="Deactivate">
+    ```bash deactivate-user.sh
+    curl -X PATCH https://api.example.com/api/v1/users/3fa85f64-5717-4562-b3fc-2c963f66afa6/status \
+      -H "Authorization: Bearer <admin_access_token>" \
+      -H "Content-Type: application/json" \
+      -d '{"active": false}'
+    ```
+  </Tab>
+  <Tab title="Reactivate">
+    ```bash activate-user.sh
+    curl -X PATCH https://api.example.com/api/v1/users/3fa85f64-5717-4562-b3fc-2c963f66afa6/status \
+      -H "Authorization: Bearer <admin_access_token>" \
+      -H "Content-Type: application/json" \
+      -d '{"active": true}'
+    ```
+  </Tab>
+</Tabs>
+
+```json 200 OK
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "Jane",
+  "lastname": "Doe",
+  "email": "jane@example.com",
+  "phone": null,
+  "language": "es-ES",
+  "country": "PE",
+  "role": "USER",
+  "active": false,
+  "joinedAt": "2025-01-15T10:30:00",
+  "avatar": null,
+  "provider": "local",
+  "twoFactorEnabled": false
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `400 Bad Request` | `active` field is missing from the request body |
+| `401 Unauthorized` | Missing or invalid JWT |
+| `403 Forbidden` | Authenticated account does not have the `ADMIN` role |
+| `404 Not Found` | No user found with the given `id` |
+| `409 Conflict` | Admin attempted to modify their own account status |
+
+---
+
+## PATCH /api/v1/users/{id}/role
+
+Change the role of a user. When a role is changed, **all of that user's refresh token sessions are immediately revoked** so the new role takes effect on next login.
+
+<Note>
+  Requires the `ADMIN` role. An admin cannot change their own role — doing so
+  returns `409 Conflict`.
+</Note>
+
+### Role Enum
+
+| Value | Description |
+|-------|-------------|
+| `USER` | Standard account. Access to personal profile and authentication operations only. |
+| `ADMIN` | Full administrative access, including user listing, status, and role management. |
+
+### Path Parameters
+
+<ParamField path="id" type="string (UUID)" required>
+  UUID of the user whose role to update.
+</ParamField>
+
+### Request Body
+
+<ParamField body="role" type="string (enum)" required>
+  The new role to assign. Must be one of `USER` or `ADMIN`.
+</ParamField>
+
+### Response
+
+Returns the updated `UserResponse` object reflecting the new `role` value.
+
+### Example
+
+```bash update-role.sh
+curl -X PATCH https://api.example.com/api/v1/users/3fa85f64-5717-4562-b3fc-2c963f66afa6/role \
+  -H "Authorization: Bearer <admin_access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "ADMIN"}'
+```
+
+```json 200 OK
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "Jane",
+  "lastname": "Doe",
+  "email": "jane@example.com",
+  "phone": null,
+  "language": "es-ES",
+  "country": "PE",
+  "role": "ADMIN",
+  "active": true,
+  "joinedAt": "2025-01-15T10:30:00",
+  "avatar": null,
+  "provider": "local",
+  "twoFactorEnabled": false
+}
+```
+
+### Error Codes
+
+| Status | Cause |
+|--------|-------|
+| `400 Bad Request` | `role` field is missing or contains an invalid value |
+| `401 Unauthorized` | Missing or invalid JWT |
+| `403 Forbidden` | Authenticated account does not have the `ADMIN` role |
+| `404 Not Found` | No user found with the given `id` |
+| `409 Conflict` | Admin attempted to change their own role |

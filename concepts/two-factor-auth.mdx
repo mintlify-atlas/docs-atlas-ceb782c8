@@ -1,0 +1,186 @@
+---
+title: "Two-Factor Authentication with TOTP"
+sidebarTitle: "Two-Factor Auth"
+description: "Learn how Auth Backend implements TOTP 2FA: setup flow, backup codes, replay protection with Redis, AES encryption at rest, and how to disable 2FA safely."
+---
+
+Auth Backend's two-factor authentication (2FA) uses the Time-based One-Time Password (TOTP) algorithm, compatible with any authenticator app that supports RFC 6238 — Google Authenticator, Authy, Microsoft Authenticator, 1Password, and others. This page covers the full lifecycle: enabling 2FA, the login flow when 2FA is active, backup codes, replay protection, and disabling 2FA.
+
+## TOTP Configuration
+
+The TOTP implementation uses the `dev.samstevens.totp` library. Key parameters are externalized so they can be tuned per environment:
+
+| Property | Default | Description |
+|---|---|---|
+| `app.2fa.digits` | `6` | Number of digits in each TOTP code |
+| `app.2fa.period` | `30` | Code validity window in seconds |
+| `app.2fa.issuer` | `AuthBackend` | Issuer label shown in the authenticator app |
+| `app.2fa.pre-auth-expiration-minutes` | `5` | How long the `pre_auth_token` cookie remains valid |
+
+<Info>
+  Most authenticator apps expect 6-digit / 30-second codes. Change these values only if you have a specific requirement; non-standard settings may prevent QR code scanning in common apps.
+</Info>
+
+## Setup Flow
+
+Enabling 2FA is a two-step process that requires the user to be authenticated.
+
+<Steps>
+  <Step title="Request setup — POST /api/v1/auth/2fa/setup">
+    The server generates a new TOTP secret with a cryptographically secure random generator, stores it against the user record (but does **not** activate 2FA yet), and returns:
+
+    ```json Response body
+    {
+      "secret": "JBSWY3DPEHPK3PXP",
+      "uri": "otpauth://totp/AuthBackend:user@example.com?secret=JBSWY3DPEHPK3PXP&issuer=AuthBackend&digits=6&period=30",
+      "qrCodeImage": "data:image/png;base64,iVBORw0KGgoAAAANS..."
+    }
+    ```
+
+    The `qrCodeImage` field is a base-64-encoded PNG that your frontend can render directly in an `<img>` tag. The user scans it with their authenticator app.
+  </Step>
+  <Step title="Confirm setup — POST /api/v1/auth/2fa/confirm-setup">
+    The user submits the first 6-digit code from their app. The server verifies it against the stored secret and, on success:
+
+    - Marks 2FA as enabled (`twoFactorEnabled = true`).
+    - Generates **8 backup codes** (10-character alphanumeric, `SecureRandom`).
+    - BCrypt-hashes each backup code and stores the JSON array encrypted with AES in `backup_codes_json`.
+    - Returns the **plain-text backup codes exactly once**:
+
+    ```json Response body
+    {
+      "backupCodes": [
+        "aB3kR7mNpQ",
+        "Tz9wX2cVdE",
+        "Lf5yH8sSoU",
+        "Gr1nJ4bWiP",
+        "Xq6eK0tMuA",
+        "Dv8fY3hCzI",
+        "Nm2lO7gQrB",
+        "Wp4jT5kFxL"
+      ]
+    }
+    ```
+
+    <Warning>
+      Backup codes are shown **only once**. Instruct your users to copy or print them immediately. There is no way to retrieve them later — only to regenerate by disabling and re-enabling 2FA.
+    </Warning>
+  </Step>
+</Steps>
+
+### Anti-Replay at Setup
+
+The `confirm-setup` endpoint also marks the confirming code as used in Redis before activating 2FA. This prevents a race condition where the same code is submitted twice in rapid succession during the setup handshake.
+
+## Login Flow with 2FA
+
+When a user with 2FA enabled calls `POST /api/v1/auth/login`, the API does not issue full session cookies. Instead it triggers the pre-authentication challenge:
+
+<Steps>
+  <Step title="Submit credentials">
+    `POST /api/v1/auth/login` with email and password. The server validates the first factor. Because 2FA is enabled it returns:
+
+    ```json Login response (2FA required)
+    {
+      "message": "Two-factor authentication required",
+      "twoFactorRequired": true
+    }
+    ```
+
+    A `pre_auth_token` cookie is written (HttpOnly, `app.2fa.pre-auth-expiration-minutes` TTL). The token value is a UUID stored in Redis, keyed to the user's email.
+  </Step>
+  <Step title="Submit TOTP code (or backup code)">
+    `POST /api/v1/auth/2fa/verify` with a JSON body containing the code. The `pre_auth_token` cookie is automatically sent by the browser.
+
+    ```json Request body
+    {
+      "code": "847293"
+    }
+    ```
+
+    The server reads the `pre_auth_token` cookie, looks up the user's email in Redis, and validates the submitted code.
+  </Step>
+  <Step title="Full session issued">
+    On success:
+    - The `pre_auth_token` Redis entry is deleted.
+    - The `pre_auth_token` cookie is cleared.
+    - A full session is created (`RefreshToken` persisted to PostgreSQL, Redis entry added).
+    - `access_token` and `refresh_token` cookies are written.
+
+    ```json Verify response
+    {
+      "message": "Login successfully completed"
+    }
+    ```
+  </Step>
+</Steps>
+
+## Backup Codes
+
+Backup codes let a user recover access when they have lost their authenticator device. Each backup code is:
+
+- 10 characters long, alphanumeric (`[a-zA-Z0-9]`)
+- Generated using `SecureRandom`
+- BCrypt-hashed before storage
+- **Single-use** — once a backup code is consumed it is removed from the list in the database
+
+At the `/2fa/verify` endpoint the server first attempts to validate the submitted code as a TOTP code. If that fails it falls back to checking the list of backup codes. If neither matches, `HTTP 400` is returned.
+
+<Accordion title="Backup code storage details">
+
+Backup codes are stored in the `backup_codes_json` column of the `users` table as an AES-encrypted JSON array of BCrypt hashes. The encryption uses the key from `app.encryption.secret-key`. Even if an attacker gains read access to the database, they cannot recover the original backup codes without both the encryption key and a BCrypt brute-force.
+
+When a code is consumed, the matching hash is removed from the array, the shortened list is re-serialized, re-encrypted, and written back to the database within the same transaction.
+
+</Accordion>
+
+## Replay Protection
+
+TOTP codes are mathematically valid for the full `period` window (default 30 seconds). Without additional protection, a stolen code could be submitted twice within the same window. Auth Backend prevents this by tracking used codes in Redis:
+
+- On successful TOTP validation, `UsedTotpCodeRedisRepository.markAsUsedIfNew(userId, code, period)` is called.
+- If the code has already been used within the current period, the method returns `false` and an `InvalidOtpException` is thrown before the session is created.
+- The Redis key expires automatically after one `period` (30 seconds), so only the active window is tracked.
+
+This applies at both the `confirm-setup` and `verify` (login) endpoints.
+
+<Tip>
+  Backup codes do not need the Redis replay guard because they are removed from the database on first use — making them inherently single-use at the persistence layer.
+</Tip>
+
+## Encryption at Rest
+
+Both the TOTP secret and the backup codes JSON are encrypted with AES using the key defined by `app.encryption.secret-key`. The plaintext is never stored in the database.
+
+```
+Database column: two_factor_secret  → AES-encrypted TOTP secret
+Database column: backup_codes_json  → AES-encrypted JSON array of BCrypt hashes
+```
+
+## Disabling 2FA
+
+`POST /api/v1/auth/2fa/disable` requires a valid current TOTP code. If the code is correct:
+
+1. `twoFactorEnabled` is set to `false`.
+2. `twoFactorSecret` is set to `null`.
+3. `backupCodesJson` is set to `null`.
+4. All active sessions for the user are revoked (equivalent to `logout-all`), forcing a fresh login without 2FA.
+
+```json Request body
+{
+  "code": "391847"
+}
+```
+
+<Warning>
+  Disabling 2FA invalidates all active sessions. The user will need to log in again with email and password only.
+</Warning>
+
+## Endpoint Reference
+
+| Method | Path | Auth Required | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/2fa/setup` | ✅ Authenticated | Generate QR code and secret |
+| `POST` | `/api/v1/auth/2fa/confirm-setup` | ✅ Authenticated | Activate 2FA and receive backup codes |
+| `POST` | `/api/v1/auth/2fa/verify` | `pre_auth_token` cookie | Complete 2FA login challenge |
+| `POST` | `/api/v1/auth/2fa/disable` | ✅ Authenticated | Disable 2FA (requires valid TOTP code) |

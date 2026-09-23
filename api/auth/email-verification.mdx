@@ -1,0 +1,188 @@
+---
+title: "Email Verification Endpoints — Verify and Resend"
+sidebarTitle: "Email Verification"
+description: "Confirm a new account with a 6-digit code sent by email, or request a fresh code. Both endpoints are rate-limited to 4 requests per hour per IP."
+---
+
+The Auth Backend **email verification** flow activates a newly registered account by validating a 6-digit numeric code delivered by email. The code is stored in Redis and expires after **15 minutes** (configurable via `app.email-verification.expiration-minutes`). Two endpoints cover this flow: `POST /api/v1/auth/verify-email` consumes the code and marks the account as verified, and `POST /api/v1/auth/resend-verification` dispatches a fresh code without revealing whether the address is registered.
+
+## Rate Limit
+
+<Warning>
+  Both endpoints share the **`EMAIL_VERIFICATION`** rate limit bucket: **4 requests per hour** per IP address. Exceeding this limit returns `429 Too Many Requests`.
+</Warning>
+
+---
+
+## POST /api/v1/auth/verify-email
+
+**Verify an account using the emailed code.**
+
+### Authentication
+
+No authentication is required. This endpoint is publicly accessible.
+
+### Request Body
+
+<ParamField body="email" type="string" required>
+  The email address to verify. Must be a valid email format.
+</ParamField>
+
+<ParamField body="code" type="string" required>
+  The 6-digit numeric verification code received by email. Must match the pattern `\d{6}`.
+</ParamField>
+
+### Example Request Body
+
+```json verify-email-body.json
+{
+  "email": "jane@example.com",
+  "code": "482931"
+}
+```
+
+### Response
+
+**200 OK** — The code was valid; the account is now fully verified and the user may log in.
+
+<ResponseField name="message" type="string">
+  Always `"Email verified successfully. You can now log in."`.
+</ResponseField>
+
+```json 200-verify-email.json
+{
+  "message": "Email verified successfully. You can now log in."
+}
+```
+
+<Info>
+  This endpoint is **idempotent**. If the account is already verified and the code is still valid in Redis, the call succeeds again with the same message.
+</Info>
+
+### cURL Example
+
+```bash verify-email.sh
+curl -X POST https://api.example.com/api/v1/auth/verify-email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "jane@example.com",
+    "code": "482931"
+  }'
+```
+
+---
+
+## POST /api/v1/auth/resend-verification
+
+**Request a new verification code.**
+
+### Authentication
+
+No authentication is required. This endpoint is publicly accessible.
+
+### Request Body
+
+<ParamField body="email" type="string" required>
+  The email address for which to resend the verification code. Must be a valid email format.
+</ParamField>
+
+### Example Request Body
+
+```json resend-body.json
+{
+  "email": "jane@example.com"
+}
+```
+
+### Response
+
+**200 OK** — Always returned, even if the email is not registered or the account is already verified. This prevents user enumeration.
+
+<ResponseField name="message" type="string">
+  Always `"If the email is registered and pending verification, a new code has been sent."`.
+</ResponseField>
+
+```json 200-resend.json
+{
+  "message": "If the email is registered and pending verification, a new code has been sent."
+}
+```
+
+### cURL Example
+
+```bash resend-verification.sh
+curl -X POST https://api.example.com/api/v1/auth/resend-verification \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "jane@example.com"
+  }'
+```
+
+---
+
+## Verification Code Lifecycle
+
+<Steps>
+  <Step title="Registration triggers the first code">
+    When a new account is created via `POST /api/v1/auth/register`, a 6-digit code is automatically generated and emailed. No manual resend is needed initially.
+  </Step>
+  <Step title="Code stored in Redis">
+    The code is stored in Redis with a **15-minute TTL**. Each resend overwrites the previous code.
+  </Step>
+  <Step title="User submits the code">
+    The user calls `POST /api/v1/auth/verify-email` with their email and code. On success, the account is activated and the Redis key is cleared.
+  </Step>
+  <Step title="Code expired or lost">
+    If the 15-minute window passes, call `POST /api/v1/auth/resend-verification` to generate a fresh code and restart the timer.
+  </Step>
+</Steps>
+
+## Error Codes
+
+<AccordionGroup>
+  <Accordion title="400 Bad Request — Invalid or expired code (verify-email)">
+    Returned when the submitted code does not match the one stored in Redis, has already been used, or has expired.
+
+    ```json 400-verify-email.json
+    {
+      "type": "about:blank",
+      "title": "Bad Request",
+      "status": 400,
+      "detail": "Invalid or expired verification code",
+      "instance": "/api/v1/auth/verify-email"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 Bad Request — Validation failure">
+    Returned when the request body fails Bean Validation (e.g., `code` is not exactly 6 digits, `email` is malformed).
+
+    ```json 400-validation.json
+    {
+      "type": "about:blank",
+      "title": "Bad Request",
+      "status": 400,
+      "detail": "Verification code must be exactly 6 digits",
+      "instance": "/api/v1/auth/verify-email"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 Too Many Requests — Rate limit exceeded">
+    Returned when the shared `EMAIL_VERIFICATION` bucket is exhausted (4 requests/hour per IP).
+
+    ```json 429-email-verification.json
+    {
+      "type": "about:blank",
+      "title": "Rate Limit Exceeded",
+      "status": 429,
+      "detail": "Too many requests, please wait",
+      "instance": "/api/v1/auth/verify-email"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The `resend-verification` endpoint always responds with `200 OK` regardless of whether the email is registered or already verified. This is an intentional anti-enumeration measure.
+</Note>

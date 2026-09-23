@@ -1,0 +1,165 @@
+---
+title: "Set Up Two-Factor Authentication — TOTP Enrollment"
+sidebarTitle: "Setup 2FA"
+description: "Enroll a TOTP authenticator app on your account with a two-step flow: generate a QR code, then confirm with your first live code to receive one-time backup codes."
+---
+
+Auth Backend's two-factor authentication (2FA) uses the TOTP standard (RFC 6238) to add a second layer of security beyond your password. Enrollment is a deliberate two-step process: the first endpoint generates a shared secret and a QR code you scan with your authenticator app, and the second endpoint verifies that your app is producing valid codes before 2FA is activated — returning a set of single-use backup codes that are shown **only once**.
+
+<Warning>
+  Backup codes are returned exclusively in the `POST /confirm-setup` response and are **never retrievable again**. Store them in a secure password manager immediately.
+</Warning>
+
+---
+
+## Rate Limit
+
+All `/api/v1/auth/2fa/**` endpoints share a single bucket: **5 requests per 15 minutes** per authenticated user. Exceeding the limit returns `429 Too Many Requests` with an `application/problem+json` body.
+
+---
+
+## Full Enrollment Flow
+
+<Steps>
+
+### Step 1 — Generate the QR Code
+
+Call `POST /api/v1/auth/2fa/setup` while authenticated. The server generates a TOTP secret, persists it to your user record (2FA is **not yet active**), and returns both a scannable QR code and the raw secret for manual entry.
+
+**Endpoint**
+
+```
+POST /api/v1/auth/2fa/setup
+```
+
+**Authentication required** — Bearer token (`Authorization: Bearer <jwt>`) or `access_token` HttpOnly cookie.
+
+**Request body** — none.
+
+**Response — `200 OK`**
+
+<ResponseField name="secret" type="string" required>
+  The Base32-encoded TOTP secret. Use this for manual entry if the QR code cannot be scanned.
+</ResponseField>
+
+<ResponseField name="qrCodeUri" type="string" required>
+  The `otpauth://` URI compliant with the TOTP standard. Can be used to construct a custom QR code on the client side.
+</ResponseField>
+
+<ResponseField name="qrCodeImage" type="string" required>
+  A Base64-encoded PNG image prefixed with `data:image/png;base64,`. Render this directly in an `<img>` tag to display the scannable QR code.
+</ResponseField>
+
+```json Setup Response Example
+{
+  "secret": "JBSWY3DPEHPK3PXP",
+  "qrCodeUri": "otpauth://totp/auth-backend:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=auth-backend",
+  "qrCodeImage": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+}
+```
+
+<Tip>
+  Most authenticator apps (Google Authenticator, Authy, 1Password) can import the `otpauth://` URI directly via a deep link — no camera required.
+</Tip>
+
+**curl example**
+
+```bash step1-setup.sh
+curl -X POST https://api.example.com/api/v1/auth/2fa/setup \
+  -H "Authorization: Bearer <access_token>"
+```
+
+**Error codes**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | 2FA is already enabled on this account. |
+| `401 Unauthorized` | Missing or invalid authentication token. |
+| `429 Too Many Requests` | Rate limit exceeded (5 req / 15 min). |
+
+---
+
+### Step 2 — Confirm Setup and Activate 2FA
+
+Open your authenticator app and read the 6-digit TOTP code. Call `POST /api/v1/auth/2fa/confirm-setup` with that code. The server validates it against the secret stored in Step 1, marks 2FA as **active**, and returns your backup codes.
+
+**Endpoint**
+
+```
+POST /api/v1/auth/2fa/confirm-setup
+```
+
+**Authentication required** — Bearer token or `access_token` HttpOnly cookie.
+
+**Request body**
+
+<ParamField body="code" type="string" required>
+  The current 6-digit TOTP code shown by your authenticator app. Must match the pattern `^[a-zA-Z0-9]{6,10}$`.
+</ParamField>
+
+```json Confirm Setup Request Example
+{
+  "code": "482916"
+}
+```
+
+**Response — `200 OK`**
+
+<ResponseField name="backupCodes" type="string[]" required>
+  A list of single-use alphanumeric backup codes. Each code can be used **once** in place of a TOTP code if you lose access to your authenticator app. Stored as BCrypt hashes; the plaintext is shown here for the first and only time.
+</ResponseField>
+
+```json Confirm Setup Response Example
+{
+  "backupCodes": [
+    "A1B2-C3D4",
+    "E5F6-G7H8",
+    "I9J0-K1L2",
+    "M3N4-O5P6",
+    "Q7R8-S9T0",
+    "U1V2-W3X4",
+    "Y5Z6-A7B8",
+    "C9D0-E1F2"
+  ]
+}
+```
+
+<Warning>
+  Anti-replay protection is active: if you submit the same TOTP code a second time within its 30-second validity window, the request is rejected with `400 Bad Request` even though the code is mathematically valid.
+</Warning>
+
+**curl example**
+
+```bash step2-confirm.sh
+curl -X POST https://api.example.com/api/v1/auth/2fa/confirm-setup \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "482916"}'
+```
+
+**Error codes**
+
+| Status | Condition |
+|--------|-----------|
+| `400 Bad Request` | Invalid or expired TOTP code. |
+| `400 Bad Request` | TOTP code replay detected — wait for the next code. |
+| `400 Bad Request` | No pending setup found — call `/setup` first. |
+| `400 Bad Request` | 2FA is already enabled on this account. |
+| `400 Bad Request` | `code` is blank or does not match `^[a-zA-Z0-9]{6,10}$`. |
+| `401 Unauthorized` | Missing or invalid authentication token. |
+| `429 Too Many Requests` | Rate limit exceeded (5 req / 15 min). |
+
+</Steps>
+
+---
+
+## Backup Codes
+
+<Accordion title="How backup codes work">
+  Backup codes are generated during `confirm-setup` and stored as AES-encrypted BCrypt hashes in the database. Each code is consumed (removed from the list) on first use and cannot be reused.
+
+  - **Count:** 8 codes generated per enrollment.
+  - **Format:** Short alphanumeric strings — no spaces required when submitting.
+  - **Usage:** Submit a backup code in the `code` field of `POST /api/v1/auth/2fa/verify` exactly as provided.
+  - **Regeneration:** Currently backup codes are regenerated only when you disable and re-enable 2FA. Keep them stored securely from the moment you receive them.
+</Accordion>

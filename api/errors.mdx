@@ -1,0 +1,343 @@
+---
+title: "Error Responses — ProblemDetail Format Reference"
+sidebarTitle: "Errors"
+description: "All Auth Backend errors follow RFC 9457 ProblemDetail. This page maps every HTTP status code to its causes and shows example error response bodies."
+---
+
+The **Auth Backend** uses [RFC 9457 Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457) as its standard error format. Every non-2xx response carries a `Content-Type: application/problem+json` body with a consistent set of fields, making it straightforward to handle errors programmatically without parsing unstructured message strings.
+
+---
+
+## Error Response Shape
+
+Every error response is a JSON object with the following top-level fields:
+
+<ResponseField name="type" type="string (URI)">
+  A URI reference that identifies the problem type. The server currently uses
+  `about:blank` for most errors. Future versions may link to human-readable
+  documentation pages.
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  A short, human-readable summary of the problem type. Does not change between
+  occurrences of the same problem (e.g. `"Bad Request"`, `"Unauthorized"`).
+</ResponseField>
+
+<ResponseField name="status" type="integer">
+  The HTTP status code.
+</ResponseField>
+
+<ResponseField name="detail" type="string">
+  A human-readable explanation specific to this occurrence. Safe to display to
+  end users.
+</ResponseField>
+
+<ResponseField name="instance" type="string">
+  A URI reference that identifies the specific occurrence. Automatically set to
+  the request path by Spring (e.g. `/api/v1/auth/login`).
+</ResponseField>
+
+<ResponseField name="errors" type="object">
+  Present only on `400` validation errors. A map of field names to their
+  violation messages (e.g. `{"newPassword": "Password must be at least 8 characters long"}`).
+</ResponseField>
+
+<ResponseField name="traceId" type="string">
+  Present only on `500 Internal Server Error`. A UUID you can share with the
+  server team to locate the exact exception in the logs.
+</ResponseField>
+
+---
+
+## HTTP Status Codes
+
+<Accordion title="400 Bad Request">
+
+Returned when the request itself is malformed or fails bean-validation constraints.
+
+**Common causes:**
+- A required field is blank or `null`.
+- A field value violates a size, pattern, or type constraint (e.g. password too short, phone number contains letters).
+- An OTP or email-verification code is invalid, already used, or expired.
+- A file uploaded for avatar has an unsupported format, exceeds 2000 × 2000 px, or is corrupt.
+- An operation is attempted on a Google OAuth account that is only available to `local` accounts (e.g. changing a password).
+
+```json 400 — Validation Error
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "Validation failed for one or more fields",
+  "instance": "/api/v1/users/me/change-password",
+  "errors": {
+    "newPassword": "Password must be at least 8 characters long"
+  }
+}
+```
+
+```json 400 — Invalid OTP
+{
+  "type": "about:blank",
+  "title": "Invalid or expired code",
+  "status": 400,
+  "detail": "The provided OTP is invalid or has expired.",
+  "instance": "/api/v1/auth/verify-otp"
+}
+```
+
+```json 400 — OAuth Account Restriction
+{
+  "type": "about:blank",
+  "title": "Operation not available for social accounts",
+  "status": 400,
+  "detail": "Password management is not available for accounts linked to google. Please sign in with Google to access your account.",
+  "instance": "/api/v1/users/me/change-password"
+}
+```
+
+</Accordion>
+
+<Accordion title="401 Unauthorized">
+
+Returned when the request cannot be authenticated.
+
+**Common causes:**
+- No `Authorization` header and no `access_token` cookie provided.
+- The JWT is malformed, has an invalid signature, or has expired.
+- The refresh token is invalid, revoked, or not found.
+- Incorrect email or password during login.
+- The current password supplied to `change-password` is wrong.
+
+```json 401 — Bad Credentials
+{
+  "type": "about:blank",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "Incorrect email or password",
+  "instance": "/api/v1/auth/login"
+}
+```
+
+```json 401 — Invalid Token
+{
+  "type": "about:blank",
+  "title": "Invalid Token",
+  "status": 401,
+  "detail": "The provided token is invalid or has expired.",
+  "instance": "/api/v1/auth/refresh"
+}
+```
+
+</Accordion>
+
+<Accordion title="403 Forbidden">
+
+Returned when the requester is authenticated but is not permitted to perform the operation.
+
+**Common causes:**
+- The account's email address has not been verified yet (applies to `local` accounts before clicking the verification link).
+- The account has been deactivated or suspended by an administrator.
+- A `USER`-role account attempts to access an `ADMIN`-only endpoint.
+- An authenticated user attempts to access a resource that belongs to another user.
+
+```json 403 — Email Not Verified
+{
+  "type": "about:blank",
+  "title": "Email not verified",
+  "status": 403,
+  "detail": "Please verify your email address before logging in.",
+  "instance": "/api/v1/auth/login"
+}
+```
+
+```json 403 — Account Suspended
+{
+  "type": "about:blank",
+  "title": "Account Suspended",
+  "status": 403,
+  "detail": "Account is disabled/suspended, please contact support.",
+  "instance": "/api/v1/auth/login"
+}
+```
+
+```json 403 — Access Denied
+{
+  "type": "about:blank",
+  "title": "Access Denied",
+  "status": 403,
+  "detail": "Access Denied",
+  "instance": "/api/v1/users"
+}
+```
+
+</Accordion>
+
+<Accordion title="404 Not Found">
+
+Returned when a requested resource does not exist.
+
+**Common causes:**
+- No user exists with the given UUID.
+- A public profile is requested for a user whose account is inactive.
+- A session or refresh token record is not found in the database.
+
+```json 404 — User Not Found
+{
+  "type": "about:blank",
+  "title": "Resource Not Found",
+  "status": 404,
+  "detail": "User not found with id: 3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "instance": "/api/v1/users/3fa85f64-5717-4562-b3fc-2c963f66afa6/public"
+}
+```
+
+</Accordion>
+
+<Accordion title="409 Conflict">
+
+Returned when the request conflicts with the current state of the system.
+
+**Common causes:**
+- Registering with an email address that is already in use (database unique constraint violation).
+- Attempting to open a new session when the user has already reached the maximum of **4 concurrent active sessions**.
+- An admin attempting to deactivate their own account.
+- An admin attempting to change their own role.
+
+```json 409 — Email Already Registered
+{
+  "type": "about:blank",
+  "title": "Data integrity violation",
+  "status": 409,
+  "detail": "A record with this unique identifier already exists (e.g., duplicate email).",
+  "instance": "/api/v1/auth/register"
+}
+```
+
+```json 409 — Max Sessions Exceeded
+{
+  "type": "about:blank",
+  "title": "Limit of allowed sessions reached",
+  "status": 409,
+  "detail": "You have reached the maximum number of allowed concurrent sessions (4). Please log out of another device first.",
+  "instance": "/api/v1/auth/login"
+}
+```
+
+```json 409 — Self-Role / Self-Status Conflict
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Cannot change your own user role",
+  "instance": "/api/v1/users/abc123/role"
+}
+```
+
+</Accordion>
+
+<Accordion title="429 Too Many Requests">
+
+Returned when the client has exceeded the rate limit for the requested route. The limit resets automatically after the window expires.
+
+**Rate limit windows by route category:**
+
+| Category | Routes | Limit |
+|----------|--------|-------|
+| Login | `POST /auth/login` | 10 req / min |
+| Register | `POST /auth/register` | 5 req / 10 min |
+| OTP Recovery | `POST /auth/forgot-password`, `/verify-otp`, `/reset-password` | 3 req / hour |
+| Email Verification | `POST /auth/verify-email`, `/resend-verification` | 4 req / hour |
+| Two-Factor Auth | `POST /auth/2fa/**` | 5 req / 15 min |
+| General | All other API routes | 90 req / min |
+
+```json 429 — Rate Limit Exceeded
+{
+  "type": "about:blank",
+  "title": "Too Many Requests",
+  "status": 429,
+  "detail": "Rate limit exceeded. Please try again later.",
+  "instance": "/api/v1/auth/login"
+}
+```
+
+</Accordion>
+
+<Accordion title="503 Service Unavailable">
+
+Returned when a required external service is temporarily unreachable.
+
+**Common causes:**
+- Cloudinary is unavailable when uploading or deleting an avatar image.
+- The Resend email service fails to deliver a verification, OTP, or password-reset email.
+
+```json 503 — Email Service Unavailable
+{
+  "type": "about:blank",
+  "title": "Email service unavailable",
+  "status": 503,
+  "detail": "Could not send email at this time. Please try again later.",
+  "instance": "/api/v1/auth/resend-verification"
+}
+```
+
+```json 503 — External Service Unavailable
+{
+  "type": "about:blank",
+  "title": "External service is unavailable",
+  "status": 503,
+  "detail": "An external service is temporarily unavailable. Please try again later.",
+  "instance": "/api/v1/users/me/avatar"
+}
+```
+
+</Accordion>
+
+<Accordion title="500 Internal Server Error">
+
+Returned for any unhandled exception. A `traceId` property is included in the response body — include this value when reporting issues to the server team so the exact exception can be located in the logs.
+
+```json 500 — Unexpected Error
+{
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "detail": "An unexpected error occurred. Please contact support.",
+  "instance": "/api/v1/users/me",
+  "traceId": "a1b2c3d4-0000-0000-0000-e5f6a7b8c9d0"
+}
+```
+
+</Accordion>
+
+---
+
+## Handling Errors in Clients
+
+<CardGroup cols={2}>
+  <Card title="Check Content-Type First" icon="file-check">
+    Before parsing an error response, verify that the `Content-Type` header is
+    `application/problem+json`. Proxy errors (e.g. `502 Bad Gateway` from a
+    load balancer) may return plain HTML.
+  </Card>
+  <Card title="Read the detail Field" icon="circle-info">
+    The `detail` field contains the most actionable human-readable explanation.
+    Display it to end users for input errors (`400`) or authentication prompts
+    (`401`).
+  </Card>
+  <Card title="Use the errors Map for Forms" icon="list-check">
+    On `400` responses, check for the optional `errors` object. It maps each
+    invalid field name to its violation message, ideal for displaying inline
+    form validation feedback.
+  </Card>
+  <Card title="Log traceId for 500s" icon="magnifying-glass">
+    When a `500` response is received, persist the `traceId` in your application
+    logs or error-reporting tool. Share it with the backend team to correlate
+    the exact exception in server logs.
+  </Card>
+</CardGroup>
+
+<Tip>
+  For automated retry logic, treat `503 Service Unavailable` as transient and
+  back off exponentially. Treat `400`, `401`, `403`, and `404` as permanent
+  failures that should not be retried without a change to the request.
+</Tip>
